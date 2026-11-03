@@ -1,0 +1,85 @@
+{
+  "morning": {
+    "description": "morning start: closes pending work, creates today's daily note, opens the dashboard",
+    "command": [
+      "{python}",
+      "-I",
+      "{vault}/scripts/avvio.py"
+    ],
+    "days": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "time": "08:00",
+    "at_login": true,
+    "os": [
+      "macos"
+    ]
+  },
+  "chiusura": {
+    "description": "/chiudi-giornata: rewrites the STATE files from your commits and commits locally",
+    "command": [
+      "{python}",
+      "-I",
+      "{vault}/scripts/chiudi-giornata.py"
+    ],
+    "days": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "time": "18:30"
+  },
+  "radar": {
+    "description": "filters the news in inbox/ for your projects (needs Ollama)",
+    "command": [
+      "{python}",
+      "-I",
+      "{vault}/scripts/radar.py"
+    ],
+    "days": [
+      1
+    ],
+    "time": "07:30",
+    "default": false
+  },
+  "bozze": {
+    "description": "/bozze-settimana: three post drafts (needs Claude Code)",
+    "command": [
+      "{python}",
+      "-I",
+      "{vault}/scripts/prepara-bozze.py"
+    ],
+    "days": [
+      1
+    ],
+    "time": "08:30",
+    "default": false
+  },
+  "pulizia": {
+    "description": "weekly check: versions, usage report, skill check, log rotation",
+    "command": [
+      "{python}",
+      "-I",
+      "{vault}/scripts/pulizia-settimanale.py"
+    ],
+    "days": [
+      5
+    ],
+    "time": "18:00"
+  },
+  "dashboard": {
+    "description": "keeps the local dashboard running on 127.0.0.1:8765",
+    "command": [
+      "{python}",
+      "-I",
+      "{vault}/scripts/dashboard/server.py"
+    ],
+    "service": true
+  }
+}

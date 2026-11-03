@@ -1,0 +1,3 @@
+# Secret scanning with gitleaks (https://github.com/gitleaks/gitleaks). It finds secrets, not names or paths.
+[extend]
+useDefault = true

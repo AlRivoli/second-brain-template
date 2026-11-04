@@ -1,0 +1,34 @@
+{
+  "id": "servizi",
+  "versione": 1,
+  "sempre": false,
+  "richiede": [
+    "core"
+  ],
+  "titolo": {
+    "en": "Services and limits",
+    "it": "Servizi e limiti"
+  },
+  "descrizione": {
+    "en": "A table of the services your projects run on (hosting, database, mail), their plan and the limit to watch. The dashboard shows it in the Services page. You fill docs/servizi.md by hand: nothing is measured for you.",
+    "it": "Una tabella dei servizi su cui girano i tuoi progetti (hosting, database, posta), il loro piano e il limite da guardare. La dashboard la mostra nella pagina Servizi. Compili docs/servizi.md a mano: non si misura niente per te."
+  },
+  "domanda_attivazione": {
+    "en": "Do you want to keep track of the services and limits of your projects?",
+    "it": "Vuoi tenere sotto controllo servizi e limiti dei tuoi progetti?"
+  },
+  "domande": [],
+  "azioni": [
+    {
+      "tipo": "config_set",
+      "forza": true,
+      "valori": {
+        "moduli": {
+          "servizi": {
+            "attivo": true
+          }
+        }
+      }
+    }
+  ]
+}

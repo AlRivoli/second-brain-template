@@ -1,0 +1,35 @@
+{
+  "lingua": "en",
+  "nome": "CI User",
+  "ruolo": "tester",
+  "moduli": {
+    "riservata": {
+      "attivo": true,
+      "cartella": "projects/confidential-notes"
+    },
+    "radar": {
+      "attivo": true,
+      "temi": "databases, privacy",
+      "feeds": "https://example.com/rss",
+      "automazione": "interno",
+      "radar_embedding": "none",
+      "radar_giudizio": "none"
+    },
+    "bozze": {
+      "attivo": true,
+      "social": "linkedin"
+    },
+    "servizi": {
+      "attivo": true
+    },
+    "assistente": {
+      "attivo": true,
+      "assistente": "none",
+      "calendario": "ics",
+      "calendario_al_cloud": false
+    },
+    "scaffold": {
+      "attivo": true
+    }
+  }
+}

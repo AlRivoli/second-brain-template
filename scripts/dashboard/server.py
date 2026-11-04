@@ -1,0 +1,1308 @@
+#!/usr/bin/env python3
+"""Dashboard locale del second brain: inbox, radar, progetti e job launchd.
+
+Uso: scripts/dashboard/server.py [porta]   (default 8765, ascolta solo su 127.0.0.1)
+Ogni dato viene letto dai file del vault a ogni richiesta. Scrive solo le caselle di docs/piano.md
+e docs/scadenze.md (imposta_fatto), i voti sulle scartate del radar in radar/feedback.jsonl (vota_scartata)
+e avvia le azioni previste (avvia).
+"""
+import importlib.util
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+VAULT = Path(__file__).resolve().parent.parent.parent
+HERE = Path(__file__).resolve().parent
+
+def _modulo(percorso):
+    """Carica un modulo da file: con 'python3 -I' la cartella dello script non è nel path e il nome ha un trattino."""
+    percorso = Path(percorso)
+    spec = importlib.util.spec_from_file_location(percorso.stem.replace("-", "_"), percorso)
+    modulo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+configurazione = _modulo(HERE / "configurazione.py")
+controllo_skill = _modulo(HERE.parent / "controllo-skill.py")
+avvii_modulo = _modulo(HERE / "avvii.py")
+genera_plist = _modulo(HERE.parent / "genera_plist.py") if (HERE.parent / "genera_plist.py").exists() else None  # nel template non c'è: i job li registra install_jobs.py
+servizi_modulo = _modulo(HERE / "servizi.py")
+post_modulo = _modulo(HERE / "post.py")
+richieste_modulo = _modulo(HERE / "richieste.py")
+agenda_modulo = _modulo(HERE / "agenda.py")
+assistente_modulo = _modulo(HERE / "assistente.py")
+limiti_modulo = _modulo(HERE / "limiti.py")
+modello_modulo = _modulo(HERE.parent / "modello.py")
+percorsi = _modulo(HERE.parent / "percorsi.py")
+calendario_modulo = _modulo(HERE.parent / "calendario.py")
+BLOCCO_RICHIESTE = threading.Lock()  # una scrittura alla volta sul file delle richieste
+BLOCCO_CONFIG = threading.Lock()  # un solo cambio alla volta ai file globali di Claude
+PORTA = 8765
+HOST_OK = {"127.0.0.1:%d" % PORTA, "localhost:%d" % PORTA}
+JOB = ["morning", "chiusura", "n8n", "pulizia", "ollama"]
+RIGA_PROGETTO = re.compile(r"^\| \[\[projects/([^/\\|]+)/STATE")
+VOCE_INBOX = re.compile(r"^- \[([^\]]+)\]\(([^)]+)\)")
+SEZIONE = re.compile(r"^## (.+)$")
+SCARTATA = re.compile(r"^- (.+) \(score ([\d.]+), ([^)]*)\): (.*)$")
+LINK_NOVITA = re.compile(r"^\[(.+)\]\((https?://[^)\s]+)\)$")  # "### [Titolo](https://...)": solo http e https, mai javascript:
+GIUDIZI = {"falso-scarto", "scarto-giusto"}
+BLOCCO_FEEDBACK = threading.Lock()
+
+
+def progetti():
+    """Righe di INDEX.md con stack, stato, data e obiettivo dello STATE."""
+    out = []
+    for riga in (VAULT / "projects" / "INDEX.md").read_text(encoding="utf-8").splitlines():
+        m = RIGA_PROGETTO.match(riga)
+        if not m:
+            continue
+        # Il pipe nel wikilink è escapato (\|), quindi la prima cella occupa due posizioni dello split.
+        celle = [c.strip() for c in riga.split("|")]
+        nome = m.group(1)
+        state = (VAULT / "projects" / nome / "STATE.md").read_text(encoding="utf-8")
+        obiettivo = re.search(r"## Obiettivo attuale\n(.*?)(?=\n## |\Z)", state, re.S)
+        out.append({
+            "nome": nome,
+            "stack": celle[3],
+            "stato": celle[4],
+            "aggiornato": celle[6],
+            "obiettivo": obiettivo.group(1).strip() if obiettivo else "",
+            "primoPasso": primo_passo(state),
+            "doveSono": testo_sezione(state, "Dove sono"),
+            "passi": voci_sezione(state, "Prossimi 3 passi", NUMERATA),
+            "blocchi": voci_sezione(state, "Blocchi aperti", PUNTO),
+            "attivita": attivita(repo_di(state)),
+            "avanzamento": avanzamento(repo_di(state)),
+        })
+    return out
+
+
+NUMERATA = re.compile(r"^\d+\. (.+)$", re.M)
+PUNTO = re.compile(r"^- (.+)$", re.M)
+REPO = re.compile(r"^- \*\*Repo:\*\* (.+)$", re.M)
+
+
+def testo_sezione(stato, titolo):
+    """Testo di una sezione '## titolo' di uno STATE, vuoto se manca."""
+    m = re.search(r"## " + titolo + r"\n(.*?)(?=\n## |\Z)", stato, re.S)
+    return m.group(1).strip() if m else ""
+
+
+def voci_sezione(stato, titolo, voce):
+    return [m.strip() for m in voce.findall(testo_sezione(stato, titolo))]
+
+
+def repo_di(stato):
+    m = REPO.search(stato)
+    return m.group(1).strip() if m else None
+
+
+def _commit(riga):
+    quando, ramo, messaggio = riga.split("\t", 2)
+    return {"quando": int(quando), "ramo": ramo.removeprefix("refs/heads/"), "messaggio": messaggio}
+
+
+def attivita(repo):
+    """Branch, modifiche non committate e ultimi commit (quando come timestamp, e messaggio) del repo del progetto; None se non si legge."""
+    if not repo or not (Path(repo) / ".git").exists():
+        return None
+    try:
+        # --branches: il lavoro sta anche su feat/* e in worktree, non solo sul branch corrente.
+        log = _git_in(repo, "log", "--branches", "--source", "-4", "--format=%ct\t%S\t%s", check=True)
+        giorni = _git_in(repo, "log", "--branches", "--since=14 days ago", "--format=%cs", check=True).split()
+        oggi = datetime.now().date()
+        return {
+            "ultimoCommit": int(_git_in(repo, "log", "-1", "--branches", "--format=%ct", check=True) or 0),
+            "giorni": [{"data": str(oggi - timedelta(days=d)), "n": giorni.count(str(oggi - timedelta(days=d)))} for d in range(13, -1, -1)],
+            "branch": _git_in(repo, "branch", "--show-current", check=True),
+            "nonCommittate": len([r for r in _git_in(repo, "status", "--porcelain", check=True).splitlines() if r.strip()]),
+            "commit": [_commit(r) for r in log.splitlines() if r.count("\t") >= 2],
+        }
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+STATO_TICKET = re.compile(r"^status:\s*(\w+)", re.M)
+
+
+def avanzamento(repo):
+    """Ticket di wayfinder del repo, chiusi su totali, per mappa: docs/**/tickets/*.md e docs/wayfinder/NNN-*.md. None se non ce ne sono."""
+    docs = Path(repo) / "docs" if repo else None
+    if not docs or not docs.is_dir():
+        return None
+    mappe, aperti = {}, []
+    for file in sorted(set(docs.rglob("tickets/*.md")) | set((docs / "wayfinder").glob("[0-9]*-*.md"))):
+        try:
+            m = STATO_TICKET.search(file.read_text(encoding="utf-8", errors="replace")[:600])
+        except OSError:
+            continue
+        if not m:
+            continue
+        rel = file.relative_to(docs).parts
+        nome = rel[rel.index("tickets") - 1] if "tickets" in rel and rel.index("tickets") > 0 else "wayfinder"
+        nome = "principale" if nome == "wayfinder" and "tickets" in rel else nome
+        voce = mappe.setdefault(nome, {"nome": nome, "chiusi": 0, "totale": 0})
+        voce["totale"] += 1
+        if m.group(1).lower() == "closed":
+            voce["chiusi"] += 1
+        else:
+            aperti.append(re.sub(r"^\d+-", "", file.stem).replace("-", " "))
+    if not mappe:
+        return None
+    lista = sorted(mappe.values(), key=lambda x: x["nome"])
+    return {"chiusi": sum(x["chiusi"] for x in lista), "totale": sum(x["totale"] for x in lista), "mappe": lista, "aperti": aperti}
+
+
+PASSI = re.compile(r"## Prossimi 3 passi\n(.*?)(?=\n## |\Z)", re.S)
+PRIMO_PASSO = re.compile(r"^1\. (.+)$", re.M)
+
+
+def primo_passo(stato):
+    """Primo passo della sezione 'Prossimi 3 passi' di uno STATE, o None."""
+    sezione = PASSI.search(stato)
+    primo = PRIMO_PASSO.search(sezione.group(1)) if sezione else None
+    return primo.group(1).strip() if primo else None
+
+
+def inbox():
+    """File di novità in inbox/, dal più recente, con il numero di voci."""
+    file = sorted((VAULT / "inbox").glob("*-novita.md"), reverse=True)
+    return [
+        {"file": f.name, "voci": sum(1 for r in f.read_text(encoding="utf-8").splitlines() if VOCE_INBOX.match(r))}
+        for f in file
+    ]
+
+
+def voti(file=None):
+    """Ultimo giudizio per titolo da radar/feedback.jsonl (l'ultima riga vale): titolo -> giudizio."""
+    file = file or VAULT / "radar" / "feedback.jsonl"
+    if not file.exists():
+        return {}
+    out = {}
+    for riga in file.read_text(encoding="utf-8").splitlines():
+        try:
+            v = json.loads(riga)
+            out[v["titolo"]] = v["giudizio"]
+        except (ValueError, KeyError, TypeError):
+            continue  # una riga rovinata non deve spegnere la dashboard
+    return out
+
+
+def radar(cartella=None, feedback=None):
+    """Ultimo report del radar: schede da leggere (titolo, link) e scartate (titolo, score, progetto, motivo, giudizio) con il riepilogo dei voti."""
+    cartella = cartella or VAULT / "radar"
+    file = sorted(cartella.glob("20*.md"), reverse=True)
+    if not file:
+        return None
+    da_leggere, scartate, sezione = [], [], None
+    for riga in file[0].read_text(encoding="utf-8").splitlines():
+        s = SEZIONE.match(riga)
+        if s:
+            sezione = s.group(1)
+            continue
+        if sezione == "Da leggere" and riga.startswith("### "):
+            m = LINK_NOVITA.match(riga[4:].strip())
+            da_leggere.append({"titolo": m.group(1), "link": m.group(2)} if m else {"titolo": riga[4:], "link": None})
+        elif sezione and sezione.startswith("Scartate") and riga.startswith("- "):
+            m = SCARTATA.match(riga)
+            scartate.append(
+                {"titolo": m.group(1), "score": float(m.group(2)), "progetto": m.group(3), "motivo": m.group(4)}
+                if m else {"titolo": riga[2:], "score": None, "progetto": None, "motivo": None}
+            )
+    giudizi = voti(feedback)
+    for c in scartate:
+        c["giudizio"] = giudizi.get(c["titolo"])
+    return {
+        "data": file[0].stem, "daLeggere": da_leggere, "scartate": scartate,
+        "valutate": len(giudizi), "falsiScarti": sum(1 for g in giudizi.values() if g == "falso-scarto"),
+    }
+
+
+def vota_scartata(titolo, giudizio, cartella=None, feedback=None):
+    """Registra il voto su una scartata dell'ultimo report: ValueError se il giudizio non è valido, LookupError se il titolo non c'è."""
+    if giudizio not in GIUDIZI:
+        raise ValueError(giudizio)
+    r = radar(cartella, feedback)
+    scartata = next((c for c in (r["scartate"] if r else []) if c["titolo"] == titolo), None)
+    if scartata is None:
+        raise LookupError(titolo)
+    riga = {
+        "data": datetime.now().isoformat(timespec="seconds"), "titolo": titolo, "score": scartata["score"],
+        "progetto": scartata["progetto"], "motivo": scartata["motivo"], "giudizio": giudizio,
+    }
+    with BLOCCO_FEEDBACK, (feedback or VAULT / "radar" / "feedback.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps(riga, ensure_ascii=False) + "\n")
+
+
+def jobs_pianificati(vault=VAULT):
+    """{nome: dati nel formato dei plist} dei job di scripts/jobs.json. Nel vault completo li legge genera_plist; nel template
+    (formato neutro di install_jobs.py) li porta allo stesso formato, così «Avvii» funziona con gli stessi orari."""
+    if genera_plist is not None:
+        return genera_plist.carica(vault)
+    vault = Path(vault)
+    try:
+        etichetta = json.loads((vault / "config.json").read_text(encoding="utf-8")).get("etichetta", "second-brain")
+        jobs = json.loads((vault / "scripts" / "jobs.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for nome, j in jobs.items():
+        voce = {"Label": "%s.%s" % (etichetta, nome), "StandardOutPath": str(percorsi.cartella_log() / ("second-brain-%s.log" % nome))}
+        if j.get("time") and j.get("days"):
+            ora, minuto = (int(x) for x in j["time"].split(":"))
+            voce["StartCalendarInterval"] = [{"Weekday": g % 7, "Hour": ora, "Minute": minuto} for g in sorted(j["days"])]
+        out[nome] = voce
+    return out
+
+
+def job():
+    """Stato di ogni job launchd del second brain: running, loaded o assente. Fuori da macOS non c'è launchd: nessuno stato."""
+    out = {}
+    if sys.platform != "darwin":
+        return out
+    jobs = jobs_pianificati(VAULT)
+    for nome in JOB:
+        if nome not in jobs:
+            continue
+        etichetta = "gui/%d/%s" % (_uid(), jobs[nome]["Label"])
+        r = subprocess.run(["launchctl", "print", etichetta], capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            out[nome] = "non caricato"
+            continue
+        stato = re.search(r"state = (.+)", r.stdout)
+        out[nome] = stato.group(1) if stato else "caricato"
+    return out
+
+
+def _uid():
+    import os
+    return os.getuid()
+
+
+def _git_in(repo, *args, check=False):
+    r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=10, check=check)
+    return r.stdout.strip()
+
+
+def _git(*args):
+    return _git_in(VAULT, *args)
+
+
+def vault():
+    """Branch corrente, ultimi commit, modifiche non committate e branch non ancora uniti al main."""
+    non_uniti = [b for b in _git("branch", "--no-merged", "main").splitlines() if b.strip()]
+    return {
+        "branch": _git("branch", "--show-current"),
+        "ultimiCommit": _git("log", "-4", "--format=%h %s").splitlines(),
+        "nonCommittate": len([r for r in _git("status", "--porcelain").splitlines() if r.strip()]),
+        "branchNonUniti": [b.strip() for b in non_uniti],
+    }
+
+
+def ollama():
+    """Modelli caricati in memoria da Ollama, o None se il server non risponde."""
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:11434/api/ps", timeout=3) as r:
+            return [m["name"] for m in json.load(r).get("models", [])]
+    except OSError:
+        return None
+
+
+def prossimo_radar(oggi):
+    """Il prossimo lunedì alle 07:00, quando n8n scrive la nuova inbox."""
+    giorni = (7 - oggi.weekday()) % 7 or 7
+    return (oggi + timedelta(days=giorni)).strftime("%Y-%m-%d") + " 07:00"
+
+
+def log_avvio():
+    """Ultime righe del log di avvio al login."""
+    file = percorsi.cartella_log() / "second-brain-avvio.log"
+    if not file.exists():
+        return []
+    return file.read_text(encoding="utf-8", errors="replace").splitlines()[-4:]
+
+
+def stato():
+    oggi = datetime.now()
+    return {
+        "generato": oggi.isoformat(timespec="seconds"),
+        "progetti": progetti(),
+        "inbox": inbox(),
+        "radar": radar(),
+        "job": job(),
+        "vault": vault(),
+        "ollama": ollama(),
+        "prossimoRadar": prossimo_radar(oggi),
+        "logAvvio": log_avvio(),
+    }
+
+
+def swap_usato_mb(testo):
+    """Swap in uso in MB dall'output di `sysctl vm.swapusage`, es. 'total = 2048.00M  used = 3906.56M'."""
+    m = re.search(r"used = ([\d.]+)([MG])", testo)
+    if not m:
+        return None
+    return float(m.group(1)) * (1024 if m.group(2) == "G" else 1)
+
+
+def memoria():
+    c = {**os.environ, "LC_ALL": "C"}  # come per ps: con la locale italiana i decimali hanno la virgola
+    totale = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=5, env=c).stdout.strip()
+    swap = subprocess.run(["sysctl", "-n", "vm.swapusage"], capture_output=True, text=True, timeout=5, env=c).stdout
+    return {"totaleGb": round(int(totale) / 1024**3, 1), "swapUsatoMb": swap_usato_mb(swap)}
+
+
+def processi_ollama():
+    """Processi Ollama in esecuzione: memoria residente in MB e CPU in percentuale."""
+    # LC_ALL=C: con la locale italiana ps scrive la CPU con la virgola e il float non la legge.
+    r = subprocess.run(["ps", "-axo", "pid=,rss=,%cpu=,command="], capture_output=True, text=True, timeout=5,
+                       env={**os.environ, "LC_ALL": "C"})
+    out = []
+    for riga in r.stdout.splitlines():
+        if "ollama" not in riga or "ps -axo" in riga:
+            continue
+        pid, rss, cpu, comando = riga.split(None, 3)
+        out.append({"pid": int(pid), "rssMb": round(int(rss) / 1024), "cpu": float(cpu), "comando": comando[:60]})
+    return out
+
+
+def ollama_modelli():
+    """Modelli caricati in memoria da Ollama, con quanta parte gira sulla GPU."""
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:11434/api/ps", timeout=3) as r:
+            modelli = json.load(r).get("models", [])
+    except OSError:
+        return None
+    return [
+        {
+            "nome": m["name"],
+            "gb": round(m["size"] / 1024**3, 2),
+            "gpuPct": round(100 * m.get("size_vram", 0) / m["size"]) if m.get("size") else None,
+        }
+        for m in modelli
+    ]
+
+
+def schede_modelli(tags, in_memoria, usi):
+    """Le schede dei modelli scaricati: nome, dimensioni, quantizzazione, data, se sono in memoria e da cosa sono usati.
+
+    tags: elenco di /api/tags; in_memoria: nomi in /api/ps; usi: {nome modello: a cosa serve nel radar}."""
+    def uso(nome):
+        return next((v for k, v in usi.items() if nome == k or nome.startswith(k + ":")), None)
+    return [{
+        "nome": m["name"], "gb": round(m["size"] / 1024**3, 2), "parametri": m.get("details", {}).get("parameter_size", ""),
+        "quantizzazione": m.get("details", {}).get("quantization_level", ""), "famiglia": m.get("details", {}).get("family", ""),
+        "scaricato": m.get("modified_at", "")[:10], "inMemoria": m["name"] in in_memoria, "usatoDa": uso(m["name"]),
+    } for m in sorted(tags, key=lambda x: -x["size"])]
+
+
+def ollama_installati():
+    """Modelli scaricati in Ollama, o None se non risponde. Il radar usa un modello per l'embedding e uno per il giudizio."""
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=3) as r:
+            tags = json.load(r).get("models", [])
+        with urllib.request.urlopen("http://127.0.0.1:11434/api/ps", timeout=3) as r:
+            in_memoria = {m["name"] for m in json.load(r).get("models", [])}
+    except (OSError, ValueError):
+        return None
+    usi = {n: u for n, u in ((modello_modulo.scelta("radar_embedding", VAULT)[1] or None, "embedding del radar"), (modello_modulo.scelta("radar_giudizio", VAULT)[1] or None, "giudizio del radar")) if n}
+    return schede_modelli(tags, in_memoria, usi)
+
+
+def chiamate(ultime=200):
+    """Riepilogo delle chiamate ai modelli registrate dal radar: per operazione, con medie."""
+    file = VAULT / "radar" / ".prestazioni.jsonl"
+    if not file.exists():
+        return {"totale": 0, "perOperazione": {}, "ultime": []}
+    righe = [json.loads(r) for r in file.read_text(encoding="utf-8").splitlines() if r.strip()]
+    per_op = {}
+    for r in righe:
+        g = per_op.setdefault(r["operazione"], {"chiamate": 0, "durataMedia": 0.0, "tokenAlSecondo": []})
+        g["chiamate"] += 1
+        g["durataMedia"] += r["durata_s"]
+        if r.get("token_al_secondo"):
+            g["tokenAlSecondo"].append(r["token_al_secondo"])
+    for g in per_op.values():
+        g["durataMedia"] = round(g["durataMedia"] / g["chiamate"], 2)
+        velocita = g.pop("tokenAlSecondo")
+        g["tokenAlSecondoMedia"] = round(sum(velocita) / len(velocita), 1) if velocita else None
+    return {"totale": len(righe), "perOperazione": per_op, "ultime": righe[-ultime:][::-1][:20]}
+
+
+VOCE_PIANO = re.compile(r"^- \[( |x)\] (.+)$")
+DATA_PIANO = re.compile(r"^(\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2})?) — (.+)$")
+
+
+def piano():
+    """Sezioni e voci di docs/piano.md."""
+    return leggi_sezioni(VAULT / "docs" / "piano.md")
+
+
+def scadenze(file=None):
+    """Voci piatte di docs/scadenze.md, stesso formato del piano."""
+    sezioni = leggi_sezioni(file or VAULT / "docs" / "scadenze.md")
+    return [v for s in sezioni for v in s["voci"]]
+
+
+def leggi_sezioni(file):
+    """Sezioni e voci di un file con checkbox: fatto o no, data se c'è, testo."""
+    if not file.exists():
+        return []
+    sezioni = []
+    for riga in file.read_text(encoding="utf-8").splitlines():
+        s = SEZIONE.match(riga)
+        if s:
+            sezioni.append({"titolo": s.group(1), "voci": []})
+            continue
+        v = VOCE_PIANO.match(riga)
+        if v and sezioni:
+            testo = v.group(2)
+            d = DATA_PIANO.match(testo)
+            sezioni[-1]["voci"].append({
+                "fatto": v.group(1) == "x",
+                "data": d.group(1) if d else None,
+                "testo": d.group(2) if d else testo,
+            })
+    return sezioni
+
+
+FILE_SPUNTE = {"piano": "piano.md", "scadenze": "scadenze.md"}
+
+
+def imposta_fatto(fonte, data, testo, fatto, cartella=None):
+    """Spunta o toglie la spunta alla voce di docs/<fonte>.md con questa data e questo testo; cambia solo la casella.
+    ValueError: fonte non prevista. LookupError: voce non trovata. RuntimeError: più voci uguali."""
+    if fonte not in FILE_SPUNTE:
+        raise ValueError(fonte)
+    file = (cartella or VAULT / "docs") / FILE_SPUNTE[fonte]
+    righe = file.read_text(encoding="utf-8").splitlines(keepends=True)
+    trovate = []
+    for i, riga in enumerate(righe):
+        v = VOCE_PIANO.match(riga.rstrip("\r\n"))
+        if not v:
+            continue
+        d = DATA_PIANO.match(v.group(2))
+        if (d.group(1) if d else None) == data and (d.group(2) if d else v.group(2)) == testo:
+            trovate.append(i)
+    if not trovate:
+        raise LookupError(testo)
+    if len(trovate) > 1:
+        raise RuntimeError(testo)
+    righe[trovate[0]] = "- [%s]%s" % ("x" if fatto else " ", righe[trovate[0]][5:])
+    file.write_text("".join(righe), encoding="utf-8")
+
+
+def _momento(data):
+    """(momento, ora_nota) di 'YYYY-MM-DD' o 'YYYY-MM-DD HH:MM'; senza ora conta la fine della giornata. None se la data non è valida."""
+    try:
+        if len(data) == 16:
+            return datetime.strptime(data, "%Y-%m-%d %H:%M"), True
+        return datetime.strptime(data, "%Y-%m-%d").replace(hour=23, minute=59), False
+    except ValueError:
+        return None
+
+
+def oggi(data, piano_file=None, scadenze_file=None):
+    """Cosa fare alla data indicata: voci con data (ordinate, con ritardo), voci senza data e primo passo di ogni progetto."""
+    voci = [("piano", v) for s in leggi_sezioni(piano_file or VAULT / "docs" / "piano.md") for v in s["voci"]]
+    voci += [("scadenze", v) for v in scadenze(scadenze_file)]
+    con_data, senza_data = [], []
+    for fonte, v in voci:
+        if v["fatto"]:
+            continue
+        momento = _momento(v["data"]) if v["data"] else None
+        if momento is None:
+            senza_data.append({"fonte": fonte, "testo": v["testo"]})
+            continue
+        con_data.append((momento[0], {
+            "fonte": fonte,
+            "testo": v["testo"],
+            "data": v["data"],
+            "oraNota": momento[1],
+            "inRitardo": momento[0] < data,
+        }))
+    for p in progetti():
+        if p["primoPasso"]:
+            senza_data.append({"fonte": "progetto:" + p["nome"], "testo": p["primoPasso"]})
+    con_data.sort(key=lambda c: c[0])
+    return {"conData": [c for _, c in con_data], "senzaData": senza_data}
+
+
+def ultimo_controllo_skill():
+    """Contenuto dell'ultimo daily/<settimana>-skill.json scritto dal controllo del venerdì, o None."""
+    file = sorted((VAULT / "daily").glob("*-skill.json"), reverse=True)
+    try:
+        return json.loads(file[0].read_text(encoding="utf-8")) if file else None
+    except (OSError, ValueError):
+        return None
+
+
+MODULI_NOTI = ("riservata", "radar", "bozze", "servizi", "assistente")
+
+
+def moduli_attivi(vault=VAULT):
+    """{modulo: vero/falso} dalle scelte di setup.py in config.json. Un vault senza la chiave `moduli` (nato prima del wizard) li mostra tutti;
+    con la chiave (anche vuota) solo i moduli scelti: la pagina di un modulo non scelto non compare."""
+    try:
+        scelti = json.loads((Path(vault) / "config.json").read_text(encoding="utf-8")).get("moduli")
+    except (OSError, ValueError):
+        scelti = None
+    if not isinstance(scelti, dict):
+        return {m: True for m in MODULI_NOTI}
+    return {m: bool(isinstance(scelti.get(m), dict) and scelti[m].get("attivo")) for m in MODULI_NOTI}
+
+
+def calendario_al_modello(vault=VAULT):
+    """Vero se l'assistente può ricevere gli appuntamenti. Con un modello locale sì; con Claude solo se l'hai permesso al setup
+    (config.json, moduli.assistente.calendario_al_cloud): senza il consenso i titoli non lasciano il computer."""
+    try:
+        if modello_modulo.scelta("assistente", vault)[0] != "claude":
+            return True
+        cfg = json.loads((Path(vault) / "config.json").read_text(encoding="utf-8"))
+        return cfg.get("moduli", {}).get("assistente", {}).get("calendario_al_cloud") is True
+    except (OSError, ValueError, AttributeError, modello_modulo.ModelloNonDisponibile):
+        return False
+
+
+def configurazione_dati():
+    """Skill, plugin, hook e MCP del globale, del vault e dei repo di projects/*/STATE.md (non la cartella riservata)."""
+    progetti_repo = [("second-brain", VAULT)]
+    for stato in sorted((VAULT / "projects").glob("*/STATE.md")):
+        repo = repo_di(stato.read_text(encoding="utf-8"))
+        if repo:
+            progetti_repo.append((stato.parent.name, Path(repo)))
+    return configurazione.raccogli(progetti_repo, ultimo_controllo_skill())
+
+
+def prestazioni():
+    return {
+        "generato": datetime.now().isoformat(timespec="seconds"),
+        "memoria": memoria(),
+        "processiOllama": processi_ollama(),
+        "modelli": ollama_modelli(),
+        "chiamate": chiamate(),
+        "claude": uso_claude(datetime.now()),
+        "consumo": consumo_claude(datetime.now()),
+        "installati": ollama_installati(),
+        "discoLiberoGb": round(shutil.disk_usage("/").free / 1024**3),
+    }
+
+
+AZIONI = {"morning": "scripts/morning.py", "chiudi-giornata": "scripts/chiudi-giornata.py",
+          "controllo-skill": "scripts/controllo-skill.py", "radar": "scripts/radar.py",
+          "pulizia": "scripts/pulizia-settimanale.py", "bozze": "scripts/prepara-bozze.py"}
+LOG_AZIONI = {"morning": "second-brain-morning.log", "chiudi-giornata": "second-brain-chiudi.log",
+              "controllo-skill": "second-brain-skill.log", "radar": "second-brain-radar.log",
+              "pulizia": "second-brain-pulizia.log", "bozze": "second-brain-bozze.log"}
+PROCESSI = {}  # azione -> processo avviato dalla dashboard
+
+
+def ambiente_azione():
+    """Ambiente per gli script: il servizio launchd ha un PATH minimo, senza Homebrew né ~/.local/bin."""
+    extra = [str(Path.home() / ".local" / "bin"), "/opt/homebrew/bin", "/usr/local/bin"]
+    return {**os.environ, "PATH": ":".join(extra + [os.environ.get("PATH", "")])}
+
+
+def avvia(nome, esegui=subprocess.Popen):
+    """Lancia una delle azioni previste, in background, con il suo log. Il browser non passa argomenti."""
+    if nome not in AZIONI:
+        raise ValueError(nome)
+    if nome in PROCESSI and PROCESSI[nome].poll() is None:
+        raise RuntimeError(nome)
+    with open(percorsi.cartella_log() / LOG_AZIONI[nome], "ab") as log:
+        script = str(VAULT / AZIONI[nome])
+        comando = [sys.executable, "-I", script] if script.endswith(".py") else ["/bin/bash", script]
+        PROCESSI[nome] = esegui(comando, cwd=str(VAULT), stdout=log,
+                                stderr=subprocess.STDOUT, env=ambiente_azione(), start_new_session=True)
+    return {"avviato": nome}
+
+
+def esecuzioni():
+    """Per ogni azione: se è in corso e le ultime righe del log. Poi gli ultimi commit del vault."""
+    out = {}
+    for nome, file in LOG_AZIONI.items():
+        log = percorsi.cartella_log() / file
+        righe = log.read_text(encoding="utf-8", errors="replace").splitlines()[-15:] if log.exists() else []
+        p = PROCESSI.get(nome)
+        out[nome] = {"inCorso": p is not None and p.poll() is None, "ultimeRighe": righe}
+    out["commit"] = _git("log", "-8", "--format=%h %s").splitlines()
+    return out
+
+
+def _uso_dal_vivo(file, cache):
+    """Le percentuali che la barra di stato di Claude Code salva a ogni risposta (scripts/statusline-uso.py), se sono
+    più fresche della copia in ~/.claude.json. Stessa forma della cache, così il resto del codice non cambia."""
+    try:
+        vivo = json.loads((file or Path.home() / ".claude" / "usage-live.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return cache
+    if cache and cache.get("fetchedAtMs", 0) >= vivo["salvato"] * 1000:
+        return cache
+    utilizzo = {}
+    for chiave in ("five_hour", "seven_day"):
+        f = vivo.get(chiave)
+        if f and f.get("percentuale") is not None and f.get("rinnovo"):
+            utilizzo[chiave] = {"utilization": f["percentuale"], "resets_at": datetime.fromtimestamp(f["rinnovo"], tz=timezone.utc).isoformat()}
+    return {"fetchedAtMs": vivo["salvato"] * 1000, "utilization": utilizzo} if utilizzo else cache
+
+
+FINESTRE_CLAUDE = {"five_hour": ("5 ore", timedelta(hours=5)), "seven_day": ("Settimana", timedelta(days=7))}
+
+
+def uso_claude(adesso, file=None, live=None):
+    """Percentuali d'uso di Claude Code, dalla copia che tiene in ~/.claude.json (legge solo quella chiave).
+
+    Il file lo scrive Claude Code quando le chiede lui, non è un'interfaccia documentata: se la finestra è già
+    stata rinnovata ('scaduto') la percentuale è di prima del rinnovo e non va letta come attuale.
+    """
+    try:
+        cache = json.loads((file or Path.home() / ".claude.json").read_text(encoding="utf-8")).get("cachedUsageUtilization")
+    except (OSError, ValueError):
+        cache = None
+    cache = _uso_dal_vivo(live, cache)
+    if not cache:
+        return {"finestre": [], "aggiornato": None}
+    letto = datetime.fromtimestamp(cache["fetchedAtMs"] / 1000)
+    finestre = []
+    for chiave, (nome, durata) in FINESTRE_CLAUDE.items():
+        f = (cache.get("utilization") or {}).get(chiave)
+        if not f:
+            continue
+        rinnovo = datetime.fromisoformat(f["resets_at"]).astimezone().replace(tzinfo=None)
+        inizio = rinnovo - durata
+        finestre.append({"nome": nome, "percentuale": f["utilization"], "rinnovo": rinnovo.isoformat(timespec="minutes"),
+                         "inizio": inizio.isoformat(timespec="minutes"), "scaduto": rinnovo <= adesso,
+                         "trascorso": min(1, max(0, (adesso - inizio) / durata))})
+    if finestre and finestre[0]["nome"] != "5 ore":  # nessuna finestra di 5 ore aperta: lo dice la pagina, non la nasconde
+        finestre.insert(0, {"nome": "5 ore", "inattiva": True})
+    return {"finestre": finestre, "aggiornato": letto.isoformat(timespec="minutes")}
+
+
+CACHE_CONSUMO = {}  # chiave: (cartella, giorni) -> (momento, risultato): le sessioni sono grandi, si rileggono al massimo ogni 2 minuti
+
+
+def consumo_claude(adesso, giorni=14, cartella=None):
+    """Token per giorno di Claude Code, letti dalle sessioni locali (~/.claude/projects/*/*.jsonl).
+
+    Conta input, output e scrittura in cache dei messaggi dell'assistente, senza la cache letta e una volta sola per
+    messaggio. Non è il limite del piano: è quanto lavoro ha fatto Claude Code ogni giorno su questo Mac.
+    """
+    base = cartella or Path.home() / ".claude" / "projects"
+    chiave = (str(base), giorni)
+    if chiave in CACHE_CONSUMO and (adesso - CACHE_CONSUMO[chiave][0]).total_seconds() < 120:
+        return CACHE_CONSUMO[chiave][1]
+    inizio = (adesso - timedelta(days=giorni - 1)).date()
+    per_giorno = {inizio + timedelta(days=d): {"token": 0, "messaggi": 0} for d in range(giorni)}
+    visti = set()
+    for file in Path(base).glob("*/*.jsonl"):
+        try:
+            if datetime.fromtimestamp(file.stat().st_mtime).date() < inizio:
+                continue
+            with file.open(encoding="utf-8", errors="replace") as righe:
+                for riga in righe:
+                    if '"usage"' not in riga:
+                        continue
+                    try:
+                        r = json.loads(riga)
+                    except ValueError:
+                        continue
+                    m = r.get("message") or {}
+                    u, quando = m.get("usage"), r.get("timestamp")
+                    if r.get("type") != "assistant" or not u or not quando or (m.get("id"), r.get("requestId")) in visti:
+                        continue
+                    visti.add((m.get("id"), r.get("requestId")))
+                    giorno = datetime.fromisoformat(quando.replace("Z", "+00:00")).astimezone().date()
+                    if giorno in per_giorno:
+                        per_giorno[giorno]["token"] += u.get("input_tokens", 0) + u.get("output_tokens", 0) + u.get("cache_creation_input_tokens", 0)
+                        per_giorno[giorno]["messaggi"] += 1
+        except OSError:
+            continue
+    risultato = {"giorni": [{"data": g.isoformat(), **v} for g, v in sorted(per_giorno.items())]}
+    CACHE_CONSUMO[chiave] = (adesso, risultato)
+    return risultato
+
+
+def _progetti_con_repo():
+    """Nome -> cartella docs/ del repo del progetto, dalle righe di INDEX e dalla riga `Repo:` degli STATE."""
+    out = {}
+    for riga in (VAULT / "projects" / "INDEX.md").read_text(encoding="utf-8").splitlines():
+        m = RIGA_PROGETTO.match(riga)
+        if m:
+            repo = repo_di((VAULT / "projects" / m.group(1) / "STATE.md").read_text(encoding="utf-8"))
+            out[m.group(1)] = Path(repo) / "docs" if repo and repo != "nessuno" else None
+    return out
+
+
+def post_calendari():
+    """Un calendario per ogni `projects/<progetto>/post-<canale>.json` dei progetti in INDEX."""
+    progetti = _progetti_con_repo()
+    cartelle = [d for d in progetti.values() if d]
+    out = []
+    for c in post_modulo.scopri(VAULT / "projects", progetti):
+        try:
+            dati = post_modulo.carica(c["file"])
+        except (OSError, ValueError):
+            continue
+        richieste = richieste_modulo.leggi(richieste_modulo.file_di(VAULT / "projects", c["progetto"], c["canale"]), c["progetto"], c["canale"])["richieste"]
+        out.append({"progetto": c["progetto"], "canale": c["canale"], "richieste": richieste,
+                    **post_modulo.per_la_pagina(dati, c["progetto"], c["canale"], cartelle)})
+    return out
+
+
+def post_richieste_aperte():
+    """Quante richieste di post sono nuove o in lavorazione, in tutti i calendari: il numero sul menu."""
+    progetti = _progetti_con_repo()
+    return sum(richieste_modulo.aperte(richieste_modulo.file_di(VAULT / "projects", c["progetto"], c["canale"]), c["progetto"], c["canale"])
+               for c in post_modulo.scopri(VAULT / "projects", progetti))
+
+
+def post_trova(progetto, canale):
+    progetti = _progetti_con_repo()
+    for c in post_modulo.scopri(VAULT / "projects", progetti):
+        if c["progetto"] == progetto and c["canale"] == canale:
+            return c["file"], [d for d in progetti.values() if d]
+    return None, []
+
+
+CALENDARIO = {"eventi": None, "errore": "", "quando": None, "in_corso": False, "assente": False, "avvisi": []}  # gli appuntamenti restano solo in memoria
+BLOCCO_CALENDARIO = threading.Lock()
+VALIDITA_CALENDARIO = 900  # secondi: leggere il Calendario è lento (da decine di secondi a minuti)
+
+
+def _aggiorna_calendario():
+    try:
+        cal = calendario_modulo.provider(VAULT)
+        if cal is None:  # nessun calendario collegato (config.json, o un sistema senza provider): la sezione resta vuota
+            eventi, errore, avvisi = [], "", []
+        else:
+            nomi = cal.nomi()
+            agenda_modulo.scrivi_config(VAULT / "docs" / "calendari.md", nomi)
+            config = agenda_modulo.leggi_config(VAULT / "docs" / "calendari.md")
+            eventi = cal.eventi(7, esclusi=[n for n, c in config.items() if not c["mostra"]])
+            errore, avvisi = "", list(getattr(cal, "avvisi", []))
+    except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as e:
+        eventi, errore, avvisi, cal = None, str(e) or "Calendario non risponde", [], True
+    with BLOCCO_CALENDARIO:
+        CALENDARIO.update({"eventi": eventi, "errore": errore, "quando": datetime.now(), "in_corso": False, "assente": cal is None, "avvisi": avvisi})
+
+
+def _calendario_in_background():
+    """Gli appuntamenti dell'ultima lettura; se sono vecchi di oltre 5 minuti ne parte una nuova, senza far aspettare la pagina."""
+    with BLOCCO_CALENDARIO:
+        vecchio = CALENDARIO["quando"] is None or (datetime.now() - CALENDARIO["quando"]).total_seconds() > VALIDITA_CALENDARIO
+        if vecchio and not CALENDARIO["in_corso"]:
+            CALENDARIO["in_corso"] = True
+            threading.Thread(target=_aggiorna_calendario, daemon=True).start()
+        return dict(CALENDARIO)
+
+
+def _calendario_o_errore():
+    cal = calendario_modulo.provider(VAULT)
+    if cal is None:
+        raise ValueError("nessun calendario collegato")
+    return cal
+
+
+def _scadenze_prossime(adesso):
+    """Voci con data da piano, scadenze, rinnovi dei servizi e post non ancora pubblicati."""
+    voci = [{"fonte": f, "testo": v["testo"], "data": v["data"], "fatto": False}
+            for f, lista in (("piano", [x for sez in leggi_sezioni(VAULT / "docs" / "piano.md") for x in sez["voci"]]), ("scadenze", scadenze(None)))
+            for v in lista if not v["fatto"] and v["data"] and _momento(v["data"])]
+    for p in servizi_modulo.servizi(VAULT / "docs" / "servizi.md"):
+        for c in p["costi"]:
+            if c.get("Rinnovo") and _momento(c["Rinnovo"][:10]):
+                resto = c["Rinnovo"][10:].lstrip(", ")
+                voci.append({"fonte": "rinnovo", "testo": "Rinnovo di " + c["Voce"] + (" (" + resto + ")" if resto else ""), "data": c["Rinnovo"][:10]})
+    for cal in post_calendari():
+        for v in cal["voci"]:
+            if v.get("stato") != "pubblicato" and _momento(v.get("data", "")):
+                voci.append({"fonte": "post", "testo": "Post: " + v["titolo"], "data": v["data"] + (" " + v["ora"][:5] if v["ora"][:2].isdigit() and v["ora"][2:3] == ":" else "")})
+    return voci
+
+
+def aspetta(adesso=None):
+    adesso = adesso or datetime.now()
+    c = _calendario_in_background()
+    config = agenda_modulo.leggi_config(VAULT / "docs" / "calendari.md")
+    voci = agenda_modulo.unisci(c["eventi"] or [], _scadenze_prossime(adesso), adesso, 7, config)
+    rapporto = radar()
+    return {"voci": voci,
+            "calendario": {"stato": "errore" if c["errore"] else "ok" if c["eventi"] is not None else "caricamento",
+                           "errore": c["errore"], "aggiornato": c["quando"].isoformat(timespec="minutes") if c["quando"] else None,
+                           "assente": c["assente"], "avvisi": c["avvisi"]},
+            "novita": {"data": rapporto["data"] if rapporto else None, "daLeggere": (rapporto["daLeggere"] if rapporto else [])[:3]}}
+
+
+def servizi_dati(adesso=None):
+    """I servizi di ogni progetto con proiezione, verdetti, spesa mensile e costo del passaggio ai piani a pagamento."""
+    oggi = (adesso or datetime.now()).date()
+    out = []
+    for p in servizi_modulo.servizi(VAULT / "docs" / "servizi.md"):
+        misure = []
+        for m in p["misure"]:
+            try:
+                misure.append(limiti_modulo.analizza(m, oggi))
+            except (KeyError, ValueError):
+                continue  # una riga mal scritta non rompe la pagina
+        verdetti = {}
+        for servizio in {m["servizio"] for m in misure}:
+            verdetti[servizio] = limiti_modulo.verdetto_servizio([m for m in misure if m["servizio"] == servizio])
+        p["analisi"] = {"misure": misure, "verdetti": verdetti, "spesaMensile": limiti_modulo.spesa_mensile(p["costi"]),
+                        "saltoDiPiano": limiti_modulo.salto_di_piano(p["piani"], verdetti), "etichette": limiti_modulo.ETICHETTA}
+        out.append(p)
+    return out
+
+
+def avvii():
+    vivi = [n for n, p in PROCESSI.items() if p.poll() is None]
+    return avvii_modulo.avvii(datetime.now(), jobs_pianificati(VAULT), percorsi.cartella_log(),
+                              in_corso=vivi, acceso=avvii_modulo.avvio_mac(), azioni=AZIONI)
+
+
+BOZZE = VAULT / "content" / "linkedin"
+RETI = {"linkedin": BOZZE, "instagram": VAULT / "content" / "instagram"}
+
+
+STATO_BOZZE = VAULT / "content" / "stato.json"  # {"linkedin/<file>.md": {"stato": "pubblicata", "data": "2026-10-30"}}
+STATI_BOZZA = ("da pubblicare", "pubblicata", "scartata")
+
+
+def stati_bozze(file=STATO_BOZZE):
+    try:
+        return json.loads(file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def imposta_stato_bozza(rete, nome, stato, adesso=None, file=STATO_BOZZE):
+    """Segna una bozza come pubblicata o scartata (o la rimette in coda). Il nome deve essere di una bozza esistente."""
+    if not all(isinstance(x, str) for x in (rete, nome, stato)) or rete not in RETI or stato not in STATI_BOZZA or not any(b["nome"] == nome for b in bozze(RETI[rete])):
+        raise ValueError("bozza o stato non validi")
+    stati = stati_bozze(file)
+    if stato == "da pubblicare":
+        stati.pop(rete + "/" + nome, None)
+    else:
+        stati[rete + "/" + nome] = {"stato": stato, "data": (adesso or datetime.now()).date().isoformat()}
+    tmp = file.with_suffix(".tmp")
+    tmp.write_text(json.dumps(stati, ensure_ascii=False, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, file)
+
+
+def bozze(cartella=BOZZE, stati=None):
+    """Bozze di una rete: titolo, testo da copiare, immagine (<nome>.png, o <nome>-schema.png) se esiste, stato."""
+    if not cartella.is_dir():
+        return []
+    out = []
+    for file in sorted(cartella.glob("*.md"), reverse=True):
+        righe = file.read_text(encoding="utf-8").splitlines()
+        titolo = righe[0].removeprefix("# ").strip() if righe else file.stem
+        testo = "\n".join(r for r in righe[1:] if not r.lstrip("[").startswith("Immagine")).strip()
+        immagine = next((i for i in (file.with_suffix(".png"), file.with_name(file.stem + "-schema.png")) if i.is_file()), None)
+        st = (stati or {}).get(cartella.name + "/" + file.name) or {}
+        out.append({"nome": file.name, "titolo": titolo, "testo": testo, "immagine": immagine.name if immagine else None,
+                    "stato": st.get("stato", "da pubblicare"), "data": st.get("data")})
+    return out
+
+
+def bozze_per_rete():
+    stati = stati_bozze()
+    return {rete: bozze(cartella, stati) for rete, cartella in RETI.items()}
+
+
+def immagine_bozza(nome, cartella=BOZZE):
+    """Percorso dell'immagine solo se è tra quelle elencate da bozze(): il nome dalla richiesta non apre altri file."""
+    for b in bozze(cartella):
+        if b["immagine"] == nome:
+            return cartella / nome
+    return None
+
+
+class Gestore(BaseHTTPRequestHandler):
+    def do_POST(self):
+        # Un sito aperto nel browser non può mandare X-Azione: la richiesta con questo header richiede una preflight
+        # che il server non accetta, quindi solo la dashboard può avviare un'azione.
+        if self.headers.get("Host") not in HOST_OK or self.headers.get("X-Azione") != "conferma":
+            self.send_error(403)
+            return
+        percorso = self.path.split("?", 1)[0]
+        if percorso == "/api/spunte":
+            self._spunta()
+            return
+        if percorso == "/api/radar/feedback":
+            self._vota()
+            return
+        if percorso == "/api/bozze/stato":
+            self._bozza_stato()
+            return
+        if percorso == "/api/post/stato":
+            self._post_stato()
+            return
+        if percorso == "/api/servizi/misura":
+            self._servizi_misura()
+            return
+        if percorso == "/api/assistente/chiedi":
+            self._assistente_chiedi()
+            return
+        if percorso in ("/api/assistente/proponi", "/api/assistente/applica", "/api/assistente/annulla"):
+            self._assistente_scrive(percorso.rsplit("/", 1)[1])
+            return
+        if percorso in ("/api/post/richiesta", "/api/post/richiesta/annulla"):
+            self._post_richiesta(percorso.endswith("/annulla"))
+            return
+        if percorso in ("/api/configurazione/interruttore", "/api/configurazione/aggiorna"):
+            self._configura(percorso.rsplit("/", 1)[1])
+            return
+        if not percorso.startswith("/api/azioni/"):
+            self.send_error(404)
+            return
+        try:
+            esito = avvia(percorso.removeprefix("/api/azioni/"))
+        except ValueError:
+            self.send_error(404)
+            return
+        except RuntimeError:
+            self.send_error(409)
+            return
+        self._invia(json.dumps(esito).encode("utf-8"), "application/json; charset=utf-8")
+
+    def _spunta(self):
+        try:
+            lunghezza = int(self.headers.get("Content-Length", ""))
+            corpo = json.loads(self.rfile.read(lunghezza)) if 0 < lunghezza <= 4096 else None
+            fonte, data, testo, fatto = corpo["fonte"], corpo.get("data"), corpo["testo"], corpo["fatto"]
+            valido = isinstance(fatto, bool) and isinstance(fonte, str) and isinstance(testo, str) and (data is None or isinstance(data, str))
+        except (ValueError, KeyError, TypeError, AttributeError):
+            valido = False
+        if not valido:
+            self.send_error(400)
+            return
+        try:
+            imposta_fatto(fonte, data, testo, fatto)
+        except ValueError:
+            self.send_error(400)
+            return
+        except LookupError:
+            self.send_error(404)
+            return
+        except RuntimeError:
+            self.send_error(409)
+            return
+        self._invia(json.dumps({"fatto": fatto}).encode("utf-8"), "application/json; charset=utf-8")
+
+    def _vota(self):
+        try:
+            lunghezza = int(self.headers.get("Content-Length", ""))
+            corpo = json.loads(self.rfile.read(lunghezza)) if 0 < lunghezza <= 4096 else None
+            titolo, giudizio = corpo["titolo"], corpo["giudizio"]
+            valido = isinstance(titolo, str) and isinstance(giudizio, str)
+        except (ValueError, KeyError, TypeError, AttributeError):
+            valido = False
+        if not valido:
+            self.send_error(400)
+            return
+        try:
+            vota_scartata(titolo, giudizio)
+        except ValueError:
+            self.send_error(400)
+            return
+        except LookupError:
+            self.send_error(404)
+            return
+        self._invia(json.dumps({"giudizio": giudizio}).encode("utf-8"), "application/json; charset=utf-8")
+
+    def _post_scarica(self, percorso):
+        """Una immagine (/scarica/<progetto>/<canale>/<id>/<n>, n da 1) o tutte in uno ZIP (/zip/<progetto>/<canale>/<id>)."""
+        try:
+            tipo, _, resto = percorso.removeprefix("/api/post/").partition("/")
+            pezzi = resto.split("/")
+            progetto, canale, id_voce = pezzi[:3]
+            file, cartelle = post_trova(progetto, canale)
+            voce = post_modulo.trova_voce(post_modulo.carica(file), id_voce) if file else None
+            if voce is None:
+                raise LookupError
+            if tipo == "zip":
+                self._invia(post_modulo.zip_voce(voce, cartelle), "application/zip",
+                            scarica=post_modulo.nome_file(voce, 0, ".zip").replace("-00.zip", ".zip"))
+                return
+            n = int(pezzi[3])
+            immagine = post_modulo.percorso_immagine({"voci": [voce]}, id_voce, n - 1, cartelle) if n >= 1 else None
+            if immagine is None:
+                raise LookupError
+            self._invia(immagine.read_bytes(), post_modulo.ESTENSIONI[immagine.suffix.lower()],
+                        scarica=post_modulo.nome_file(voce, n, immagine.suffix.lower()))
+        except (LookupError, ValueError, IndexError, OSError):
+            self.send_error(404)
+
+    def _assistente_scrive(self, azione):
+        """proponi: la frase diventa una scheda modificabile (non scrive). applica: scrive dopo il clic. annulla: toglie ciò che si è creato."""
+        corpo = self._corpo_json(2048)
+        if not isinstance(corpo, dict):
+            self.send_error(400)
+            return
+        adesso = datetime.now()
+        config = agenda_modulo.leggi_config(VAULT / "docs" / "calendari.md")
+        scrivibili = [n for n, c in config.items() if c["scrivi"] and c["tipo"] != "lavoro"]
+        try:
+            if azione == "proponi":
+                frase = corpo.get("frase")
+                if not isinstance(frase, str) or not 2 <= len(frase.strip()) <= 400:
+                    raise ValueError("frase non valida")
+                campi, in_conflitto = assistente_modulo.proponi(frase.strip(), adesso, aspetta()["voci"])
+                esito = {"proposta": campi, "conflitti": in_conflitto, "calendari": scrivibili}
+            elif azione == "applica":
+                valido = assistente_modulo.valida(corpo, adesso, scrivibili)
+                creati = assistente_modulo.crea_evento(valido, _calendario_o_errore())
+                with BLOCCO_CALENDARIO:  # l'evento nuovo si vede subito, senza rileggere tutto il Calendario
+                    for c in creati:
+                        (CALENDARIO["eventi"] if CALENDARIO["eventi"] is not None else []).append(
+                            {"calendario": c["calendario"], "titolo": valido["titolo"], "inizio": valido["inizio"], "fine": valido["fine"], "tuttoIlGiorno": False, "uid": c["uid"]})
+                esito = {"creati": creati}
+            else:
+                uid = corpo.get("uid")
+                if not isinstance(uid, str):
+                    raise ValueError("uid non valido")
+                assistente_modulo.togli_evento(uid, _calendario_o_errore())
+                with BLOCCO_CALENDARIO:
+                    if CALENDARIO["eventi"] is not None:
+                        CALENDARIO["eventi"] = [e for e in CALENDARIO["eventi"] if e.get("uid") != uid]
+                esito = {"tolto": True}
+        except ValueError as e:
+            self._invia(json.dumps({"errore": str(e)}, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8", 400)
+            return
+        except LookupError as e:
+            self._invia(json.dumps({"errore": str(e)}, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8", 404)
+            return
+        except (RuntimeError, subprocess.TimeoutExpired) as e:
+            self._invia(json.dumps({"errore": "il Calendario non ha risposto: %s" % e}, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8", 502)
+            return
+        self._invia(json.dumps(esito, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+
+    def _assistente_chiedi(self):
+        domanda = (self._corpo_json(2048) or {}).get("domanda")
+        if not isinstance(domanda, str) or not 2 <= len(domanda.strip()) <= 400:
+            self.send_error(400)
+            return
+        dati = aspetta()
+        if dati["calendario"]["stato"] != "ok":
+            esito = {"pronto": False, "risposta": "Sto ancora leggendo il Calendario: riprova tra un minuto." if dati["calendario"]["stato"] == "caricamento"
+                     else "Non riesco a leggere il Calendario (%s): senza non rispondo, per non dire che sei libero quando non lo sei." % dati["calendario"]["errore"]}
+        else:
+            inizio = datetime.now()
+            try:
+                risposta = assistente_modulo.chiedi(domanda.strip(), dati["voci"], [n["titolo"] for n in dati["novita"]["daLeggere"] if n.get("titolo")], inizio,
+                                                     senza_calendario=dati["calendario"].get("assente", False) or not calendario_al_modello())
+                esito = {"pronto": True, "risposta": risposta, "secondi": round((datetime.now() - inizio).total_seconds(), 1),
+                         "calendario": dati["calendario"]}
+            except RuntimeError as e:
+                esito = {"pronto": False, "risposta": str(e)}
+        self._invia(json.dumps(esito, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+
+    def _servizi_misura(self):
+        corpo = self._corpo_json()
+        try:
+            progetto, servizio, misura, usato = corpo["progetto"], corpo["servizio"], corpo["misura"], corpo["usato"]
+            valido = all(isinstance(x, (str, int, float)) for x in (progetto, servizio, misura, usato))
+        except (KeyError, TypeError):
+            valido = False
+        if not valido:
+            self.send_error(400)
+            return
+        try:
+            with BLOCCO_RICHIESTE:
+                servizi_modulo.aggiorna_misura(VAULT / "docs" / "servizi.md", progetto, servizio, misura, usato, datetime.now().date().isoformat())
+        except ValueError:
+            self.send_error(400)
+            return
+        except LookupError:
+            self.send_error(404)
+            return
+        self._invia(json.dumps({"ok": True}).encode("utf-8"), "application/json; charset=utf-8")
+
+    def _post_richiesta(self, annulla):
+        corpo = self._corpo_json(8192)
+        try:
+            progetto, canale = corpo["progetto"], corpo["canale"]
+            valido = isinstance(progetto, str) and isinstance(canale, str)
+        except (KeyError, TypeError):
+            valido = False
+        file, _ = post_trova(progetto, canale) if valido else (None, [])
+        if not valido or file is None:
+            self.send_error(400 if not valido else 404)
+            return
+        percorso_richieste = richieste_modulo.file_di(VAULT / "projects", progetto, canale)
+        try:
+            with BLOCCO_RICHIESTE:
+                if annulla:
+                    r = richieste_modulo.annulla(percorso_richieste, progetto, canale, corpo.get("id"), datetime.now())
+                else:
+                    ids = {v.get("id") for v in post_modulo.carica(file).get("voci", [])}
+                    r = richieste_modulo.aggiungi(percorso_richieste, progetto, canale, corpo, ids, datetime.now())
+        except ValueError:
+            self.send_error(400)
+            return
+        except LookupError:
+            self.send_error(404)
+            return
+        self._invia(json.dumps(r, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+
+    def _bozza_stato(self):
+        corpo = self._corpo_json() or {}
+        try:
+            imposta_stato_bozza(corpo.get("rete"), corpo.get("nome"), corpo.get("stato"))
+        except ValueError:
+            self.send_error(400)
+            return
+        self._invia(json.dumps({"stato": corpo["stato"]}).encode("utf-8"), "application/json; charset=utf-8")
+
+    def _post_stato(self):
+        corpo = self._corpo_json()
+        try:
+            progetto, canale, id_voce, stato = (corpo or {})["progetto"], corpo["canale"], corpo["id"], corpo["stato"]
+            valido = all(isinstance(x, str) for x in (progetto, canale, id_voce, stato))
+        except (KeyError, TypeError):
+            valido = False
+        if not valido:
+            self.send_error(400)
+            return
+        file, _ = post_trova(progetto, canale)
+        if file is None:
+            self.send_error(404)
+            return
+        try:
+            post_modulo.imposta_stato(file, id_voce, stato)
+        except ValueError:
+            self.send_error(400)
+            return
+        except LookupError:
+            self.send_error(404)
+            return
+        self._invia(json.dumps({"stato": stato}).encode("utf-8"), "application/json; charset=utf-8")
+
+    def _corpo_json(self, massimo=4096):
+        try:
+            lunghezza = int(self.headers.get("Content-Length", ""))
+            corpo = json.loads(self.rfile.read(lunghezza)) if 0 < lunghezza <= massimo else None
+        except ValueError:
+            return None
+        return corpo if isinstance(corpo, dict) else None
+
+    def _errore(self, codice, messaggio):
+        self._invia(json.dumps({"errore": messaggio}, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8", codice)
+
+    def _configura(self, azione):
+        """Cambi ai file globali di Claude: interruttori di skill e plugin, aggiornamento di una skill già controllata."""
+        corpo = self._corpo_json()
+        if corpo is None or not isinstance(corpo.get("nome"), str):
+            self._errore(400, "richiesta non valida")
+            return
+        if not BLOCCO_CONFIG.acquire(blocking=False):
+            self._errore(409, "un altro cambio è in corso")
+            return
+        try:
+            if azione == "interruttore":
+                if not isinstance(corpo.get("attivo"), bool):
+                    self._errore(400, "richiesta non valida")
+                    return
+                configurazione.imposta_interruttore(corpo.get("tipo"), corpo["nome"], corpo["attivo"])
+                esito = {"nome": corpo["nome"], "attivo": corpo["attivo"]}
+            else:
+                esito = controllo_skill.aggiorna(corpo["nome"], corpo.get("atteso") or "")
+            self._invia(json.dumps(esito, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+        except LookupError:
+            self._errore(404, "non trovata: " + corpo["nome"])
+        except (ValueError, RuntimeError) as e:
+            self._errore(409 if isinstance(e, RuntimeError) else 400, str(e))
+        except PermissionError as e:
+            self._errore(403, str(e))
+        except (OSError, subprocess.SubprocessError) as e:
+            self._errore(500, "operazione non riuscita: " + type(e).__name__)
+        finally:
+            BLOCCO_CONFIG.release()
+
+    def do_GET(self):
+        if self.headers.get("Host") not in HOST_OK:
+            self.send_error(403)
+            return
+        percorso = self.path.split("?", 1)[0]  # un parametro in più (es. ?v=2) non deve dare 404
+        if percorso == "/":
+            self._invia((HERE / "index.html").read_bytes(), "text/html; charset=utf-8")
+        elif percorso == "/api/stato":
+            self._invia(json.dumps(stato(), ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+        elif percorso == "/api/piano":
+            self._invia(json.dumps(piano(), ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+        elif percorso == "/api/oggi":
+            self._invia(json.dumps(oggi(datetime.now()), ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+        elif percorso == "/api/moduli":
+            self._invia(json.dumps(moduli_attivi()).encode("utf-8"), "application/json; charset=utf-8")
+        elif percorso == "/api/configurazione":
+            self._invia(json.dumps(configurazione_dati(), ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+        elif percorso == "/api/prestazioni":
+            self._invia(json.dumps(prestazioni(), ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+        elif percorso == "/api/esecuzioni":
+            self._invia(json.dumps(esecuzioni(), ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+        elif percorso == "/api/servizi":
+            self._invia(json.dumps(servizi_dati(), ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+        elif percorso == "/api/aspetta":
+            self._invia(json.dumps(aspetta(), ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+        elif percorso == "/api/post/aperte":
+            self._invia(json.dumps({"aperte": post_richieste_aperte()}).encode("utf-8"), "application/json; charset=utf-8")
+        elif percorso == "/api/post":
+            self._invia(json.dumps(post_calendari(), ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+        elif percorso.startswith("/api/post/immagine/"):
+            try:
+                progetto, canale, id_voce, n = percorso.removeprefix("/api/post/immagine/").split("/")
+                file, cartelle = post_trova(progetto, canale)
+                immagine = post_modulo.percorso_immagine(post_modulo.carica(file), id_voce, int(n), cartelle) if file else None
+            except (ValueError, OSError):
+                immagine = None
+            if immagine is None:
+                self.send_error(404)
+            else:
+                self._invia(immagine.read_bytes(), post_modulo.ESTENSIONI[immagine.suffix.lower()])
+        elif percorso.startswith("/api/post/scarica/") or percorso.startswith("/api/post/zip/"):
+            self._post_scarica(percorso)
+        elif percorso == "/api/avvii":
+            self._invia(json.dumps(avvii(), ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+        elif percorso == "/api/bozze":
+            self._invia(json.dumps(bozze_per_rete(), ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+        elif percorso.startswith("/api/bozze/immagine/"):
+            rete, _, nome = percorso.removeprefix("/api/bozze/immagine/").partition("/")
+            immagine = immagine_bozza(nome, RETI[rete]) if rete in RETI else None
+            if immagine is None:
+                self.send_error(404)
+            else:
+                self._invia(immagine.read_bytes(), "image/png")
+        else:
+            self.send_error(404)
+
+    def _invia(self, corpo, tipo, codice=200, scarica=None):
+        self.send_response(codice)
+        self.send_header("Content-Type", tipo)
+        if scarica:
+            self.send_header("Content-Disposition", 'attachment; filename="%s"' % scarica)
+        self.send_header("Content-Length", str(len(corpo)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(corpo)
+
+    def log_message(self, formato, *args):
+        pass
+
+
+def main():
+    porta = int(sys.argv[1]) if len(sys.argv) > 1 else PORTA
+    HOST_OK.update({"127.0.0.1:%d" % porta, "localhost:%d" % porta})
+    ThreadingHTTPServer(("127.0.0.1", porta), Gestore).serve_forever()
+
+
+if __name__ == "__main__":
+    main()

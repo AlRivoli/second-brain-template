@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""Pre-commit: gitleaks sul contenuto in stage. Blocca il commit se trova un segreto.
+
+Attivazione (una volta per clone): git config core.hooksPath scripts/hooks
+Se manca gitleaks il commit è bloccato, perché un controllo assente non protegge (brew install gitleaks).
+Un falso positivo si segnala in .gitleaksignore con l'impronta che gitleaks stampa; solo per un commit: git commit --no-verify.
+"""
+import shutil
+import subprocess
+import sys
+
+if not shutil.which("gitleaks"):
+    sys.exit("pre-commit: gitleaks non trovato nel PATH, commit bloccato. Installalo (brew install gitleaks).")
+sys.exit(subprocess.run(["gitleaks", "git", "--pre-commit", "--staged", "--redact", "--no-banner"]).returncode)

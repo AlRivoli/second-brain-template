@@ -1,0 +1,36 @@
+{
+  "id": "radar",
+  "versione": 1,
+  "sempre": false,
+  "richiede": ["core"],
+  "titolo": {"en": "News radar", "it": "Radar delle novità"},
+  "descrizione": {
+    "en": "Every Monday it reads the feeds you choose, keeps the news that matter for your projects and writes a short card for each one in radar/.",
+    "it": "Ogni lunedì legge i feed che scegli, tiene le novità che contano per i tuoi progetti e scrive una breve scheda per ciascuna in radar/."
+  },
+  "domanda_attivazione": {"en": "Do you want a radar that looks for news on topics you follow?", "it": "Vuoi un radar che cerca novità sui temi che segui?"},
+  "domande": [
+    {"id": "temi", "tipo": "testo", "lista": true, "predefinito": "",
+     "testo": {"en": "Topics to follow, separated by commas (e.g. databases, Rust, privacy)", "it": "Temi da seguire, separati da virgole (per esempio database, Rust, privacy)"}},
+    {"id": "feeds", "tipo": "testo", "validazione": "url", "predefinito": "",
+     "testo": {"en": "Feed addresses (RSS or Atom), separated by spaces. You can leave it empty and edit memory/feeds.md later", "it": "Indirizzi dei feed (RSS o Atom), separati da spazi. Puoi lasciarlo vuoto e modificare memory/feeds.md dopo"}},
+    {"id": "automazione", "tipo": "scelta", "opzioni": ["interno", "n8n"], "predefinito": "interno",
+     "testo": {"en": "Who collects the news: the built-in collector (nothing to install) or n8n", "it": "Chi raccoglie le novità: il raccoglitore interno (non serve installare niente) oppure n8n"}},
+    {"id": "radar_embedding", "tipo": "testo", "validazione": "modello", "solo": ["none", "ollama"], "predefinito": "none",
+     "testo": {"en": "Step 1, which news look like your projects: none (keyword match, nothing to install) or ollama:bge-m3 (more precise, needs Ollama)", "it": "Passo 1, quali novità somigliano ai tuoi progetti: none (parole chiave, non serve installare niente) oppure ollama:bge-m3 (più preciso, serve Ollama)"}},
+    {"id": "radar_giudizio", "tipo": "testo", "validazione": "modello", "predefinito": "none",
+     "avviso": {"en": "claude: more precise; the news titles and the stack and goal of your projects leave your computer for Anthropic and use your plan quota. ollama:<model>: all stays on your computer, slower and less precise. none: you read every candidate. Confidential folders are never sent.",
+                "it": "claude: più preciso; i titoli delle novità e lo stack e l'obiettivo dei tuoi progetti escono dal tuo computer verso Anthropic e consumano la quota del tuo piano. ollama:<modello>: tutto resta sul computer, più lento e meno preciso. none: leggi tu tutte le candidate. Le cartelle riservate non vengono mai inviate."},
+     "testo": {"en": "Step 2, who judges each candidate: none, claude or ollama:<model>", "it": "Passo 2, chi giudica ogni candidata: none, claude oppure ollama:<modello>"}}
+  ],
+  "azioni": [
+    {"tipo": "config_set", "forza": true, "valori": {"moduli": {"radar": {"attivo": true, "automazione": "{automazione}"}},
+                                                   "modelli": {"radar_embedding": "{radar_embedding}", "radar_giudizio": "{radar_giudizio}"}}},
+    {"tipo": "crea_cartella", "percorso": "inbox", "sistema": true},
+    {"tipo": "crea_cartella", "percorso": "radar", "sistema": true},
+    {"tipo": "scrivi_file", "percorso": "memory/radar-topics.md",
+     "contenuto": "# Radar topics\n\nTopics the radar looks for in the news in `inbox/`. Edit the list any time.\n\n{temi}\n"},
+    {"tipo": "scrivi_file", "percorso": "memory/feeds.md",
+     "contenuto": "# Feeds\n\nOne address per line (RSS or Atom). The radar collector reads this file every Monday.\n\n{feeds}\n"}
+  ]
+}

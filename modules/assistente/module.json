@@ -1,0 +1,29 @@
+{
+  "id": "assistente",
+  "versione": 1,
+  "sempre": false,
+  "richiede": ["core"],
+  "titolo": {"en": "Assistant", "it": "Assistente"},
+  "descrizione": {
+    "en": "The dashboard panel where you ask about your day, free hours and news. Works on every system; the calendar part needs a calendar you connect.",
+    "it": "Il pannello della dashboard dove chiedi della tua giornata, delle ore libere e delle novità. Funziona su ogni sistema; la parte di calendario richiede un calendario collegato."
+  },
+  "domanda_attivazione": {"en": "Do you want the assistant panel in the dashboard?", "it": "Vuoi il pannello dell'assistente nella dashboard?"},
+  "domande": [
+    {"id": "assistente", "tipo": "testo", "validazione": "modello", "predefinito": "none",
+     "avviso": {"en": "claude: the question and, if you allow it below, your appointments leave your computer for Anthropic and use your plan quota. ollama:<model>: all stays on your computer. none: the panel stays off.",
+                "it": "claude: la domanda e, se lo permetti qui sotto, i tuoi appuntamenti escono dal tuo computer verso Anthropic e consumano la quota del tuo piano. ollama:<modello>: tutto resta sul computer. none: il pannello resta spento."},
+     "testo": {"en": "Which model answers: none, claude or ollama:<model>", "it": "Quale modello risponde: none, claude oppure ollama:<modello>"}},
+    {"id": "calendario", "tipo": "scelta", "opzioni": ["none", "macos", "ics", "caldav"], "predefinito": "none", "predefinito_os": {"darwin": "macos"}, "solo_os": {"macos": ["darwin"]},
+     "avviso": {"en": "none: the assistant does not know your appointments. macos: reads and writes the Calendar app (macOS only). ics: reads a calendar from its iCal address or a .ics file (read only, any system); caldav: reads and writes iCloud, Nextcloud or Fastmail with an app password; put the address and password in the file described in the README, never in the vault.",
+                "it": "none: l'assistente non conosce i tuoi appuntamenti. macos: legge e scrive l'app Calendario (solo macOS). ics: legge un calendario dal suo indirizzo iCal o da un file .ics (sola lettura, ogni sistema); caldav: legge e scrive iCloud, Nextcloud o Fastmail con una password per app; indirizzo e password vanno nel file descritto nel README, mai nel vault."},
+     "testo": {"en": "Which calendar to connect", "it": "Quale calendario collegare"}},
+    {"id": "calendario_al_cloud", "tipo": "si_no", "predefinito": false,
+     "testo": {"en": "Only if the model is claude: may the titles and times of your appointments be sent to Anthropic?", "it": "Solo se il modello è claude: i titoli e gli orari dei tuoi appuntamenti possono essere inviati ad Anthropic?"}}
+  ],
+  "azioni": [
+    {"tipo": "config_set", "forza": true, "valori": {"moduli": {"assistente": {"attivo": true, "calendario_al_cloud": "{calendario_al_cloud}"}},
+                                                   "modelli": {"assistente": "{assistente}"},
+                                                   "calendario": {"provider": "{calendario}"}}}
+  ]
+}

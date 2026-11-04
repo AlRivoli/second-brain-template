@@ -1,0 +1,23 @@
+.obsidian/workspace*
+.trash/
+.env
+*.key
+.DS_Store
+__pycache__/
+OGGI.md
+
+# Your own data: copy the *.example.md files and edit them, they are not committed
+memory/about-me.md
+memory/preferences.md
+memory/radar-topics.md
+config.json
+
+# Confidential notes never leave the machine (ADR-002)
+projects/_private/
+
+# Your repo registry and answers (scaffold module): personal, not committed
+scaffold/registro.md
+scaffold/ignorati.md
+scaffold/hook-avvio.md
+scaffold/profili/personal.md
+scaffold/profili/lavoro.md

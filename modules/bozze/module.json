@@ -1,0 +1,65 @@
+{
+  "id": "bozze",
+  "versione": 1,
+  "sempre": false,
+  "richiede": [
+    "core"
+  ],
+  "titolo": {
+    "en": "Weekly post drafts",
+    "it": "Bozze di post settimanali"
+  },
+  "descrizione": {
+    "en": "Every Monday Claude Code writes three post drafts from the work in your projects, draws an image for each and saves them in content/. It never publishes anything. Needs Claude Code (it uses your plan quota) and Chrome, Chromium or Edge for the images.",
+    "it": "Ogni lunedì Claude Code scrive tre bozze di post dal lavoro dei tuoi progetti, disegna un'immagine per ciascuna e le salva in content/. Non pubblica mai niente. Serve Claude Code (consuma la quota del tuo piano) e Chrome, Chromium o Edge per le immagini."
+  },
+  "domanda_attivazione": {
+    "en": "Do you want weekly post drafts?",
+    "it": "Vuoi le bozze di post settimanali?"
+  },
+  "domande": [
+    {
+      "id": "social",
+      "tipo": "scelta",
+      "opzioni": [
+        "both",
+        "linkedin",
+        "instagram"
+      ],
+      "predefinito": "both",
+      "testo": {
+        "en": "Which networks do you write for",
+        "it": "Per quali social scrivi"
+      }
+    }
+  ],
+  "azioni": [
+    {
+      "tipo": "config_set",
+      "forza": true,
+      "valori": {
+        "moduli": {
+          "bozze": {
+            "attivo": true,
+            "social": "{social}"
+          }
+        }
+      }
+    },
+    {
+      "tipo": "crea_cartella",
+      "percorso": "content/linkedin",
+      "sistema": true
+    },
+    {
+      "tipo": "crea_cartella",
+      "percorso": "content/instagram",
+      "sistema": true
+    },
+    {
+      "tipo": "scrivi_file",
+      "percorso": "content/stato.json",
+      "contenuto": "{}\n"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+# Changelog
+
+All notable changes to this project are written here. The format follows [Keep a Changelog](https://keepachangelog.com/), versions follow [Semantic Versioning](https://semver.org/).
+
+## [Unreleased]
+
+### Added
+- Modular setup: `modules/<id>/module.json`, `moduli.py`, a wizard that asks which modules you want and shows a summary before it writes. First modules: `core` and `riservata` (a confidential folder with a name you choose, with `.gitignore` and deny rules written for that name). `--list`, `--add`, `--answers`, `--dry-run`.
+- `scripts/modello.py`: one layer for every step that needs a model. Per step, `config.json` picks `claude`, `ollama:<model>` or `none` (the default: no model, no cloud, no download). Reads your RAM and suggests a local model (`--ram`), checks a model with three fixed requests (`--check-model <step>`), validates JSON answers and retries once.
+- Module `radar`: asks topics, feed addresses, who collects the news (built-in `scripts/feed.py` or n8n) and which model does each step (none, Claude or Ollama). `scripts/feed.py` reads RSS and Atom with the standard library and checks every title with content-guard. Step 1 can match keywords instead of embeddings, so nothing needs installing. The jobs `feed` and `radar` are registered by `install_jobs.py` when you chose the module.
+- Module `assistente`: the dashboard panel for questions about your day. Asks which model answers (none, Claude or Ollama), which calendar to connect (none, the macOS Calendar app on a Mac, or a read-only iCal address on any system) and, separately, whether the titles and times of your appointments may be sent to Anthropic when the model is Claude. Without that yes they stay on your computer.
+- `doctor.py` now checks what your own choices need: Ollama running and each local model downloaded (with the `ollama pull` command), a warning when the RAM is small for a local reasoning model, Claude Code when you chose it or the weekly drafts, n8n only if you picked it. It still never installs anything: it prints the official command for your system. The wizard warns at the end if you chose something that needs Claude Code and it is missing.
+- CI runs the wizard with every module on Linux, macOS and Windows, then the vault rules again.
+- Fixes from the first real run on Windows: the dashboard job registers without administrator rights (the logon trigger names your user), the "Local model" page no longer crashes without `sysctl` and `ps`, the wizard writes files with LF line endings and accepts an answers file with a BOM, the output of `git` and `claude` is read as UTF-8 (accents in the logs), the PATH of dashboard actions uses the system separator, `Repo: none` is no longer read as a repository, and the commands tell Windows users to run `py -3 scripts/verify`.
+- Empty pages now say why: the wizard ends with "Next steps for what you chose" (start Ollama, first radar run with `feed.py` then `radar.py`, the status line for the Claude usage page), the pages Radar, Local model and Claude usage explain what fills them, and the README has a section "When a page is empty". Obsidian is suggested only if it is not installed.
+- The wizard now prepares the computer: it scans RAM, disk, CPU and graphics card, offers the local model that fits (a numbered menu: none, Claude, or the suggested Ollama model), and then asks, one step at a time and showing the command, whether to install Ollama or Obsidian with the system package manager, download the chosen models, turn on the secret scan, add the Claude usage status line, register the jobs and run the radar once. Installers piped from the internet are never run; with `--yes` or `--answers` nothing is installed.
+- Wizard: answers that are lists, web addresses and model choices (`none`, `claude`, `ollama:<model>`), with your RAM and a suggestion before the model question; `ollama pull` hint at the end.
+- Modules `bozze` (weekly post drafts: which networks, `content/` and its state file, the Monday job) and `servizi` (the services table, switched on in `config.json`). `setup.py --clean-example` also removes the example section of `docs/servizi.md`.
+- Logs go where the system expects them (`scripts/percorsi.py`: `~/Library/Logs` on macOS, `$XDG_STATE_HOME` or `~/.local/state` on Linux, `%LOCALAPPDATA%` on Windows) instead of always `~/Library/Logs`; the dashboard starts scripts with the Python it runs on; the draft images look for Chrome, Chromium or Edge; the login script opens the browser with `xdg-open` or `start` where `open` does not exist.
+- The dashboard shows the pages of the modules you chose (Radar, Post, Servizi, Local model) and hides the others, with their menu group; `setup.py` writes `moduli` in `config.json`, and a vault without that key shows everything.
+- `scripts/calendario.py`: one layer for the calendar, with the macOS Calendar app as the first provider (default on a Mac; elsewhere no calendar is connected). A second provider, `ics`, reads an iCal address or file on any system (read-only; recurring events, exceptions and moved occurrences; what it cannot read is reported, not ignored). Private addresses live outside the vault (`~/.config/second-brain/calendari.json`, owner-only permissions) and never appear in an error message. Without a calendar, the assistant says it does not know your appointments instead of calling you free. CalDAV is next.
+
+## [0.1.0] - 2026-11-03
+
+### Added
+- Vault structure: projects with a rewritten `STATE.md`, decisions log, index, glossary, ADRs on confidential notes and autonomy.
+- `.claude/settings.json` with deny rules for push, history rewrites and the confidential folder.
+- `scripts/verify`: checks the vault rules without a model.
+- `setup.py` (first-run wizard) and `doctor.py` (prerequisites per operating system).
+- `install_jobs.py`: registers the scheduled jobs with launchd (macOS), systemd user timers (Linux) or Task Scheduler (Windows).
+- Local dashboard (Python standard library, 127.0.0.1 only).
+- Commands and subagents for Claude Code, in Italian.
+- English and Italian documentation.
+
+### Known limits
+- Used daily on macOS only. On Linux and Windows the unit tests pass in CI (Python 3.9 and 3.13), but registering the jobs with systemd and Task Scheduler has not been done for real yet.
+- The morning job opens the dashboard with a macOS command, so it is macOS only for now.
+- The Calendar section of the dashboard needs the macOS Calendar app.

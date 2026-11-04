@@ -1,0 +1,19 @@
+{
+  "id": "scaffold",
+  "versione": 1,
+  "sempre": false,
+  "richiede": ["core"],
+  "titolo": {"en": "New projects and repo tracking", "it": "Nuovi progetti e tracciamento dei repo"},
+  "descrizione": {
+    "en": "A registry of the project templates you start from, two profiles (personal and work) and a reminder for git repos the vault does not know. Nothing is written outside the vault.",
+    "it": "Un registro dei template da cui parti per i nuovi progetti, due profili (personal e lavoro) e un promemoria per i repo git che il vault non conosce. Non scrive niente fuori dal vault."
+  },
+  "domanda_attivazione": {"en": "Do you want a registry of project templates and help to track your existing repos?", "it": "Vuoi un registro dei template di progetto e un aiuto per tracciare i repo che hai già?"},
+  "domande": [],
+  "azioni": [
+    {"tipo": "crea_cartella", "percorso": "scaffold/profili", "sistema": true},
+    {"tipo": "da_esempi", "cartella": "scaffold"},
+    {"tipo": "da_esempi", "cartella": "scaffold/profili"},
+    {"tipo": "config_set", "forza": true, "valori": {"moduli": {"scaffold": {"attivo": true}}}}
+  ]
+}

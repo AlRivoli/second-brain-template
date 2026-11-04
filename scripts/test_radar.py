@@ -1,0 +1,93 @@
+import importlib.util
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("radar", Path(__file__).resolve().parent / "radar.py")
+radar = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(radar)
+
+
+class Radar(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.v = Path(self.tmp.name)
+        (self.v / "inbox").mkdir()
+        (self.v / "radar").mkdir()
+        self.chiamate = []
+        self.config("ollama:bge-m3")
+
+    def config(self, embedding):
+        (self.v / "config.json").write_text(json.dumps({"modelli": {"radar_embedding": embedding}}), encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def file(self, rel, t):
+        p = self.v / rel
+        p.write_text("x")
+        os.utime(p, (t, t))
+        return p
+
+    def lancia(self, vault, *args):
+        self.chiamate.append(args)
+
+    def test_senza_inbox_salta(self):
+        radar.radar(self.v, self.lancia)
+        self.assertEqual(self.chiamate, [])
+
+    def test_inbox_gia_elaborata_salta(self):
+        self.file("inbox/2026-11-02-novita.md", 100)
+        self.file("radar/2026-11-02.md", 200)
+        radar.radar(self.v, self.lancia)
+        radar.radar(self.v, self.lancia)  # due volte di seguito: niente
+        self.assertEqual(self.chiamate, [])
+
+    def test_se_lo_stadio_2_fallisce_il_giro_dopo_riprova(self):
+        self.file("inbox/2026-11-02-novita.md", 100)
+
+        def lancia(vault, *args):
+            self.chiamate.append(args)
+            if args[0].endswith("radar-stadio1.py"):
+                self.file("radar/.candidati-2026-11-02.json", 200)
+            if args[0].endswith("radar-stadio2.py"):
+                raise RuntimeError("Ollama spento")
+        with self.assertRaises(RuntimeError):
+            radar.radar(self.v, lancia)
+        self.chiamate.clear()
+        with self.assertRaises(RuntimeError):
+            radar.radar(self.v, lancia)
+        self.assertEqual(len(self.chiamate), 3)  # indice, stadio 1, stadio 2: non salta
+
+    def test_candidati_vecchi_non_bastano_e_gira_in_ordine_sull_ultimo(self):
+        self.file("inbox/2026-10-26-novita.md", 50)
+        self.file("inbox/2026-11-02-novita.md", 300)
+        self.file("radar/2026-10-26.md", 100)  # la scheda della settimana scorsa non vale per l'inbox nuova
+        # i passi 1 e 2 producono i candidati nuovi: li simulo al secondo passo
+        def lancia(vault, *args):
+            self.chiamate.append(args)
+            if args[0].endswith("radar-stadio1.py"):
+                self.file("radar/.candidati-2026-11-02.json", 400)
+            if args[0].endswith("radar-output.py"):
+                self.file("radar/2026-11-02.md", 500)
+        radar.radar(self.v, lancia)
+        self.assertEqual(self.chiamate, [
+            ("scripts/indice-embedding.py",), ("scripts/radar-stadio1.py",),
+            ("scripts/radar-stadio2.py", "radar/.candidati-2026-11-02.json"),
+            ("scripts/radar-output.py", "radar/.candidati-2026-11-02.json")])
+        radar.radar(self.v, lancia)  # secondo giro: la scheda c'è, non rifà niente
+        self.assertEqual(len(self.chiamate), 4)
+
+
+    def test_senza_embedding_non_calcola_l_indice(self):
+        self.config("none")
+        self.file("inbox/2026-11-02-novita.md", 100)
+        radar.radar(self.v, self.lancia)
+        self.assertEqual([c[0] for c in self.chiamate],
+                         ["scripts/radar-stadio1.py", "scripts/radar-stadio2.py", "scripts/radar-output.py"])
+
+
+if __name__ == "__main__":
+    unittest.main()

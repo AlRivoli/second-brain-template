@@ -1,0 +1,22 @@
+{
+  "id": "riservata",
+  "versione": 1,
+  "sempre": false,
+  "richiede": ["core"],
+  "titolo": {"en": "Confidential notes", "it": "Note riservate"},
+  "descrizione": {
+    "en": "A folder for documents that must never reach a cloud model (work, clients, health). Git ignores it and Claude Code is blocked from reading and editing it.",
+    "it": "Una cartella per documenti che non devono mai arrivare a un modello in cloud (lavoro, clienti, salute). Git la ignora e a Claude Code è vietato leggerla e modificarla."
+  },
+  "domanda_attivazione": {"en": "Do you want a confidential folder?", "it": "Vuoi una cartella per documenti riservati?"},
+  "domande": [
+    {"id": "cartella", "tipo": "testo", "validazione": "cartella", "predefinito": "projects/_private",
+     "testo": {"en": "Folder name (inside the vault)", "it": "Nome della cartella (dentro il vault)"}}
+  ],
+  "azioni": [
+    {"tipo": "crea_cartella", "percorso": "{cartella}"},
+    {"tipo": "gitignore", "riga": "{cartella}/"},
+    {"tipo": "deny", "cartella": "{cartella}"},
+    {"tipo": "config_set", "forza": true, "valori": {"moduli": {"riservata": {"attivo": true, "cartella": "{cartella}"}}}}
+  ]
+}

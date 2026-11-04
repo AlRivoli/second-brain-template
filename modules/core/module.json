@@ -1,0 +1,20 @@
+{
+  "id": "core",
+  "versione": 1,
+  "sempre": true,
+  "richiede": [],
+  "titolo": {"en": "Core", "it": "Base"},
+  "descrizione": {
+    "en": "Your name and role, the memory files the agent reads, and the rules in CLAUDE.md.",
+    "it": "Il tuo nome e ruolo, i file di memoria che l'agente legge e le regole in CLAUDE.md."
+  },
+  "domande": [
+    {"id": "nome", "tipo": "testo", "testo": {"en": "Your name", "it": "Il tuo nome"}, "predefinito": ""},
+    {"id": "ruolo", "tipo": "testo", "testo": {"en": "Your role (optional)", "it": "Il tuo ruolo (facoltativo)"}, "predefinito": ""}
+  ],
+  "azioni": [
+    {"tipo": "config_set", "valori": {"nome": "{nome}", "ruolo": "{ruolo}", "lingua": "{lingua}", "nome_firma": "{nome}", "fuso": "{fuso}", "moduli": {}}},
+    {"tipo": "da_esempi", "cartella": "memory", "salvo": ["radar-topics"]},
+    {"tipo": "claude_md"}
+  ]
+}

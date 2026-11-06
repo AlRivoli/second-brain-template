@@ -97,6 +97,11 @@ class WindowsTest(unittest.TestCase):
         self.assertIn('"%s"' % PureWindowsPath("/srv/vault dir/scripts/x.py"), testo)  # su Windows tutti i separatori sono \, su qualunque host
         self.assertIn("&gt;&gt;", testo)
 
+    def test_nessuna_finestra_di_console_visibile(self):
+        """Regressione: con cmd.exe come comando ogni avvio apriva una finestra CMD vuota sul desktop."""
+        testo, _ = self.xml(FERIALE)
+        self.assertIn("<Command>conhost.exe</Command><Arguments>--headless cmd.exe /c ", testo)
+
     def test_morning_del_template_gira_su_windows_feriali_alle_8_e_all_accesso(self):
         """Regressione: morning era solo macOS ("os": ["macos"]) e install_jobs su Windows non lo registrava."""
         jobs = json.loads((RADICE / "scripts" / "jobs.json").read_text(encoding="utf-8"))

@@ -194,6 +194,7 @@ Claude Code invia al modello i file che legge. Metti le note riservate nella car
 - **L'assistente dice che non conosce i tuoi appuntamenti**: non c'è un calendario collegato, il calendario non si legge, oppure il modello è `claude` e non hai permesso di inviare gli appuntamenti. `config.json` mostra `calendario.provider` e `moduli.assistente`.
 - **«è leggibile da altri utenti»**: `chmod 600` su quel file.
 - **Su Windows `./scripts/verify` non parte dentro Claude Code** (Git Bash non riesce a lanciare il `python3` dello shebang): usa `py -3 scripts/verify`. I comandi e i permessi lo prevedono già.
+- **Su Windows i job girano senza finestra**: l'Utilità di pianificazione li avvia con `conhost.exe --headless`, quindi non compare nessuna finestra CMD vuota. Se un job registrato prima di questa modifica ne apre ancora una, lancia di nuovo `py -3 install_jobs.py` per registrarlo di nuovo.
 - **`scripts/verify` protesta**: il messaggio nomina il file e la riga; correggi e rilancialo.
 - **I job non girano su Linux quando sei uscito**: `loginctl enable-linger $USER`.
 

@@ -194,6 +194,7 @@ Claude Code sends the files it reads to the model. Put confidential notes in the
 - **The assistant says it does not know your appointments**: no calendar is connected, the calendar cannot be read, or the model is `claude` and you did not allow sending appointments. `config.json` shows `calendario.provider` and `moduli.assistente`.
 - **"è leggibile da altri utenti" (the message is in Italian in v0.1)**: `chmod 600` on that file.
 - **On Windows, `./scripts/verify` does not start inside Claude Code** (Git Bash cannot run the `python3` shebang): use `py -3 scripts/verify`. The commands and the permissions already allow it.
+- **On Windows the jobs run without a window**: Task Scheduler starts them through `conhost.exe --headless`, so no empty CMD window appears. If a job registered before this change still opens one, run `py -3 install_jobs.py` again to re-register it.
 - **`scripts/verify` complains**: the message names the file and line; fix that and run it again.
 - **Jobs do not run on Linux when you are logged out**: `loginctl enable-linger $USER`.
 

@@ -101,5 +101,48 @@
       "{vault}/scripts/dashboard/server.py"
     ],
     "service": true
+  },
+  "tray": {
+    "description": "tray icon (Windows) or menu-bar icon (macOS): dashboard status, quick job starts, failure notifications",
+    "command": [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-WindowStyle",
+      "Hidden",
+      "-File",
+      "{vault}/scripts/tray/tray.ps1"
+    ],
+    "command_by_os": {
+      "macos": [
+        "{home}/Library/Application Support/second-brain/SecondBrainTray"
+      ]
+    },
+    "build": {
+      "macos": [
+        [
+          "mkdir",
+          "-p",
+          "{home}/Library/Application Support/second-brain"
+        ],
+        [
+          "swiftc",
+          "-O",
+          "-swift-version",
+          "5",
+          "-o",
+          "{home}/Library/Application Support/second-brain/SecondBrainTray",
+          "{vault}/scripts/tray/SecondBrainTray.swift"
+        ]
+      ]
+    },
+    "at_login": true,
+    "long_running": true,
+    "os": [
+      "macos",
+      "windows"
+    ]
   }
 }

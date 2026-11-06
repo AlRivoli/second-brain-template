@@ -73,13 +73,23 @@ def seleziona(jobs, sistema, solo=None, tutti=False, config=None):
     return out
 
 
+def _risolvi(lista, ctx, sistema):
+    valori = {"python": ctx["python"], "vault": str(ctx["vault"]), "home": str(ctx["home"])}
+    return [str(PureWindowsPath(a.format(**valori))) if sistema == "windows" and "{" in a else a.format(**valori) for a in lista]
+
+
 def comando(job, ctx, sistema=None):
     """Lista di argomenti con i segnaposto risolti. Il primo diventa un percorso assoluto (systemd lo richiede).
-    Per Windows i percorsi con segnaposto hanno tutti il separatore di Windows (altrimenti si mescolano / e \\)."""
-    valori = {"python": ctx["python"], "vault": str(ctx["vault"]), "home": str(ctx["home"])}
-    args = [str(PureWindowsPath(a.format(**valori))) if sistema == "windows" and "{" in a else a.format(**valori) for a in job["command"]]
+    Per Windows i percorsi con segnaposto hanno tutti il separatore di Windows (altrimenti si mescolano / e \\).
+    "command_by_os" sostituisce "command" su un sistema (la tray: PowerShell su Windows, un binario Swift su macOS)."""
+    args = _risolvi(job.get("command_by_os", {}).get(sistema, job["command"]), ctx, sistema)
     args[0] = shutil.which(args[0]) or args[0]
     return args
+
+
+def preparazione(job, ctx, sistema):
+    """Comandi da lanciare prima di registrare il job ("build" in jobs.json: la tray su macOS si compila qui)."""
+    return [_risolvi(c, ctx, sistema) for c in job.get("build", {}).get(sistema, [])]
 
 
 def giorni(job):
@@ -90,8 +100,9 @@ def giorni(job):
 
 def piano_launchd(nome, job, ctx):
     etichetta = "%s.%s" % (ctx["etichetta"], nome)
-    args = comando(job, ctx)
-    if not job.get("service"):
+    args = comando(job, ctx, "macos")
+    # A long-running job (the tray) must not keep the Mac awake for the whole session.
+    if not job.get("service") and not job.get("long_running"):
         args = ["/usr/bin/caffeinate", "-i"] + args  # il Mac resta sveglio finché il job lavora
     log = str(ctx["log"] / ("second-brain-%s.log" % nome))
     plist = {"Label": etichetta, "ProgramArguments": args, "WorkingDirectory": str(ctx["vault"]), "StandardOutPath": log, "StandardErrorPath": log,
@@ -106,7 +117,7 @@ def piano_launchd(nome, job, ctx):
     percorso = Path(ctx["home"]) / "Library" / "LaunchAgents" / ("%s.plist" % etichetta)
     uid = os.getuid() if hasattr(os, "getuid") else 0
     return {"file": [("%s.plist" % etichetta, plistlib.dumps(plist))], "dest": percorso.parent,
-            "avvia": [["?", "launchctl", "bootout", "gui/%d/%s" % (uid, etichetta)], ["launchctl", "bootstrap", "gui/%d" % uid, str(percorso)]],
+            "avvia": preparazione(job, ctx, "macos") + [["?", "launchctl", "bootout", "gui/%d/%s" % (uid, etichetta)], ["launchctl", "bootstrap", "gui/%d" % uid, str(percorso)]],
             "ferma": [["?", "launchctl", "bootout", "gui/%d/%s" % (uid, etichetta)]]}
 
 
@@ -179,14 +190,16 @@ def piano_windows(nome, job, ctx):
            "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><Enabled>true</Enabled>"
            "<ExecutionTimeLimit>%s</ExecutionTimeLimit>%s</Settings>"
            "<Actions Context=\"Author\"><Exec><Command>conhost.exe</Command><Arguments>%s</Arguments><WorkingDirectory>%s</WorkingDirectory></Exec></Actions></Task>"
-           % (escape("second-brain %s: %s" % (nome, job.get("description", ""))), "".join(trigger), "PT0S" if job.get("service") else "PT2H", riavvio,
+           # long_running (the tray): no time limit, but no watchdog or restart either, so "Esci" really closes it.
+           % (escape("second-brain %s: %s" % (nome, job.get("description", ""))), "".join(trigger),
+              "PT0S" if job.get("service") or job.get("long_running") else "PT2H", riavvio,
               # An InteractiveToken task running cmd.exe pops up an empty console window on every run. conhost --headless
               # gives cmd and its children (python, git, claude) a console that is never shown; the log redirect is unchanged.
               escape('--headless cmd.exe /c "%s >> "%s" 2>&1"' % (riga, log)), escape(str(ctx["vault"]))))
     nome_file = "%s.xml" % etichetta
     percorso = Path(ctx["home"]) / ".second-brain-jobs" / nome_file
     return {"file": [(nome_file, xml.encode("utf-16"))], "dest": percorso.parent,
-            "avvia": [["schtasks", "/create", "/tn", etichetta, "/xml", str(percorso), "/f"]], "ferma": [["schtasks", "/delete", "/tn", etichetta, "/f"]]}
+            "avvia": preparazione(job, ctx, "windows") + [["schtasks", "/create", "/tn", etichetta, "/xml", str(percorso), "/f"]], "ferma": [["schtasks", "/delete", "/tn", etichetta, "/f"]]}
 
 
 BACKEND = {"macos": piano_launchd, "linux": piano_systemd, "windows": piano_windows}

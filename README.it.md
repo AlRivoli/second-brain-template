@@ -101,6 +101,8 @@ Se un calendario non si legge, l'assistente non risponde sulle ore libere, invec
 
 `python3 scripts/dashboard/server.py`, poi apri http://127.0.0.1:8765. Ascolta solo sul tuo computer. Il menu mostra le pagine dei moduli che hai scelto; una pagina che non hai scelto non c'è. `second-brain.dashboard` (vedi «Job pianificati») la tiene in esecuzione: se si ferma, anche senza errori, riparte da sola (KeepAlive di launchd, `Restart=always` di systemd, su Windows un controllo ogni 10 minuti). Su Linux e Windows i pulsanti con lo stato dei job restano vuoti perché usano launchd.
 
+**Icona nella barra** (`second-brain.tray`, Windows e macOS, parte al login): un pallino nell'area di notifica (Windows) o nella barra dei menu (macOS), verde quando la dashboard risponde e rosso quando no (controllo ogni 30 secondi). Il menu ha tre parti. **Dashboard**: aprila, avviala o riavviala, fermala (su Windows il controllo ogni 10 minuti la fa ripartire; su macOS resta ferma finché non la avvii o rientri). **Avvia job**: lancia subito `morning`, `feed + radar` (radar parte quando feed ha finito), `chiusura`, `bozze` o `pulizia`; un job non registrato non compare. **Notifiche**: un avviso quando la dashboard cade o torna e quando un job finisce con un errore (una volta per esecuzione), con un interruttore che le spegne finché non chiudi l'icona. **Esci** chiude solo l'icona. Solo codice nativo: `scripts/tray/tray.ps1` (Windows PowerShell 5.1 e Windows Forms) e `scripts/tray/SecondBrainTray.swift` (AppKit; `install_jobs.py` lo compila con `swiftc` in `~/Library/Application Support/second-brain/`, servono gli Xcode Command Line Tools). `powershell -File scripts/tray/tray.ps1 -SelfTest` stampa il controllo della dashboard, il menu e il comando esatto di ogni voce senza mostrare nulla. La versione macOS non è ancora stata compilata né provata.
+
 ## Quando una pagina è vuota
 
 Un'installazione nuova parte con pagine vuote di proposito: si riempiono quando qualcosa è girato almeno una volta. Se le vedi così, non è rotto niente.
@@ -151,6 +153,7 @@ Subagenti: `researcher` (legge le novità e scrive schede in `radar/`), `reviewe
 | `second-brain.feed` (facoltativo, scelto al setup) | lunedì 07:00 | `scripts/feed.py`: raccoglie le novità di `memory/feeds.md` in `inbox/` (raccoglitore incluso; saltalo se usi n8n) |
 | `second-brain.radar` (facoltativo, scelto al setup) | lunedì 07:30 | filtra le novità in `inbox/` per i tuoi progetti, con i modelli che hai scelto |
 | `second-brain.bozze` (facoltativo, scelto al setup) | lunedì 08:30 | `/bozze-settimana`: tre bozze di post |
+| `second-brain.tray` | al login (macOS e Windows) | l'icona nella barra (vedi «La dashboard»); «Esci» la chiude fino al prossimo login |
 
 Il testo di una novità non è fidato: ogni titolo passa da `content-guard` (schemi di istruzioni nascoste) prima che un modello lo veda. I log stanno in `~/Library/Logs` (macOS), `$XDG_STATE_HOME/second-brain` o `~/.local/state/second-brain` (Linux), `%LOCALAPPDATA%\second-brain\logs` (Windows).
 
@@ -178,6 +181,7 @@ Il modulo `scaffold` è facoltativo. Crea `scaffold/registro.md` (i template di 
 | Calendario: `ics` e `caldav` | provati con dati finti e un server finto | uguale | uguale |
 | Job pianificati (`install_jobs.py`) | sì | file generati e testati, non ancora registrati davvero | uguale |
 | Job del mattino (`second-brain.morning`) | sì | non ancora | file generato e testato, non ancora registrato davvero |
+| Icona nella barra (`second-brain.tray`) | scritta, non provata (mai compilata) | no | provata: self-test e un avvio vero, voci del menu non ancora cliccate |
 
 «I test CI passano» vuol dire test automatici su un computer pulito, non che qualcuno l'abbia usato. Se lo provi su Linux o Windows, segnala cosa si è rotto.
 
@@ -195,12 +199,13 @@ Claude Code invia al modello i file che legge. Metti le note riservate nella car
 - **«è leggibile da altri utenti»**: `chmod 600` su quel file.
 - **Su Windows `./scripts/verify` non parte dentro Claude Code** (Git Bash non riesce a lanciare il `python3` dello shebang): usa `py -3 scripts/verify`. I comandi e i permessi lo prevedono già.
 - **Su Windows i job girano senza finestra**: l'Utilità di pianificazione li avvia con `conhost.exe --headless`, quindi non compare nessuna finestra CMD vuota. Se un job registrato prima di questa modifica ne apre ancora una, lancia di nuovo `py -3 install_jobs.py` per registrarlo di nuovo.
+- **Perché il job della tray usa `-ExecutionPolicy Bypass`**: il criterio predefinito di Windows (Restricted) blocca ogni script, anche `tray.ps1`. Il bypass vale solo per quel processo PowerShell e solo per quel file di questo repo; non cambia il criterio del sistema. Firmare lo script lo eviterebbe, ma per ora è fuori dal perimetro. Se la tua organizzazione lo vieta, togli solo questo job: `py -3 install_jobs.py --uninstall --only tray`.
 - **`scripts/verify` protesta**: il messaggio nomina il file e la riga; correggi e rilancialo.
 - **I job non girano su Linux quando sei uscito**: `loginctl enable-linger $USER`.
 
 ## Aggiornare e disinstallare
 
-Aggiornare: `git pull`, poi `python3 doctor.py` e `python3 scripts/verify`. I tuoi file sono ignorati da git o non toccati dal pull. Disinstallare: `python3 install_jobs.py --uninstall`, poi cancella la cartella. Claude Code e Ollama hanno le loro guide di disinstallazione.
+Aggiornare: `git pull`, poi `python3 doctor.py` e `python3 scripts/verify`. I tuoi file sono ignorati da git o non toccati dal pull. Disinstallare: `python3 install_jobs.py --uninstall`, poi cancella la cartella. Su macOS cancella anche `~/Library/Application Support/second-brain/` (l'icona compilata). Claude Code e Ollama hanno le loro guide di disinstallazione.
 
 ## Licenza
 

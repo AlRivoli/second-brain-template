@@ -99,7 +99,7 @@ Se un calendario non si legge, l'assistente non risponde sulle ore libere, invec
 
 ## La dashboard
 
-`python3 scripts/dashboard/server.py`, poi apri http://127.0.0.1:8765. Ascolta solo sul tuo computer. Il menu mostra le pagine dei moduli che hai scelto; una pagina che non hai scelto non c'è. `second-brain.dashboard` (vedi «Job pianificati») la tiene in esecuzione. Su Linux e Windows i pulsanti con lo stato dei job restano vuoti perché usano launchd.
+`python3 scripts/dashboard/server.py`, poi apri http://127.0.0.1:8765. Ascolta solo sul tuo computer. Il menu mostra le pagine dei moduli che hai scelto; una pagina che non hai scelto non c'è. `second-brain.dashboard` (vedi «Job pianificati») la tiene in esecuzione: se si ferma, anche senza errori, riparte da sola (KeepAlive di launchd, `Restart=always` di systemd, su Windows un controllo ogni 10 minuti). Su Linux e Windows i pulsanti con lo stato dei job restano vuoti perché usano launchd.
 
 ## Quando una pagina è vuota
 

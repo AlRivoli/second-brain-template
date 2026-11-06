@@ -144,7 +144,7 @@ Subagents: `researcher` (reads the news and writes cards in `radar/`), `reviewer
 
 | Job | When | What it does |
 |---|---|---|
-| `second-brain.morning` | weekdays 08:00 and at login (macOS only for now) | the morning start: closes pending work, creates the daily note |
+| `second-brain.morning` | weekdays 08:00 and at login (macOS and Windows; not on Linux yet) | the morning start: closes pending work, creates the daily note |
 | `second-brain.chiusura` | weekdays 18:30 | `/chiudi-giornata`: rewrites the STATE files from your commits |
 | `second-brain.pulizia` | Friday 18:00 | weekly check and report |
 | `second-brain.dashboard` | at login, kept running | the local dashboard |
@@ -177,6 +177,7 @@ The `scaffold` module is optional. It creates `scaffold/registro.md` (the projec
 | Calendar: `macos` | yes | no | no |
 | Calendar: `ics` and `caldav` | tested with fake data and a fake server | same | same |
 | Scheduled jobs (`install_jobs.py`) | yes | files generated and tested, not registered for real yet | same |
+| Morning job (`second-brain.morning`) | yes | not yet | file generated and tested, not registered for real yet |
 
 "CI tests pass" means automated tests on a clean runner, not that someone used it. If you try it on Linux or Windows, please report what broke.
 

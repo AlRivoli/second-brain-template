@@ -144,7 +144,7 @@ Subagenti: `researcher` (legge le novità e scrive schede in `radar/`), `reviewe
 
 | Job | Quando | Cosa fa |
 |---|---|---|
-| `second-brain.morning` | feriali 08:00 e al login (per ora solo macOS) | l'avvio del mattino: chiude il lavoro in sospeso, crea la nota del giorno |
+| `second-brain.morning` | feriali 08:00 e al login (macOS e Windows; su Linux non ancora) | l'avvio del mattino: chiude il lavoro in sospeso, crea la nota del giorno |
 | `second-brain.chiusura` | feriali 18:30 | `/chiudi-giornata`: riscrive gli STATE dai tuoi commit |
 | `second-brain.pulizia` | venerdì 18:00 | controllo settimanale e rapporto |
 | `second-brain.dashboard` | al login, sempre acceso | la dashboard locale |
@@ -177,6 +177,7 @@ Il modulo `scaffold` è facoltativo. Crea `scaffold/registro.md` (i template di 
 | Calendario: `macos` | sì | no | no |
 | Calendario: `ics` e `caldav` | provati con dati finti e un server finto | uguale | uguale |
 | Job pianificati (`install_jobs.py`) | sì | file generati e testati, non ancora registrati davvero | uguale |
+| Job del mattino (`second-brain.morning`) | sì | non ancora | file generato e testato, non ancora registrato davvero |
 
 «I test CI passano» vuol dire test automatici su un computer pulito, non che qualcuno l'abbia usato. Se lo provi su Linux o Windows, segnala cosa si è rotto.
 

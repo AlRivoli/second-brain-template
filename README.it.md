@@ -168,6 +168,10 @@ Il modulo `scaffold` è facoltativo. Crea `scaffold/registro.md` (i template di 
 - `scripts/repo-non-tracciato.py` dice se la cartella corrente è un repo git non tracciato. Non scrive mai da solo. Con l'hook di `scaffold/hook-avvio.md` Claude Code può ricordartelo quando apri un repo così. Quell'hook tocca le impostazioni globali `~/.claude`, quindi il wizard **non** lo installa: il file mostra le due righe da incollare e decidi tu.
 - Un repo è «tracciato» quando il suo percorso sta nel campo `Repo:` di un `projects/*/STATE.md`.
 
+## Agenti da remoto dal telefono (facoltativo)
+
+Con [Paseo](https://paseo.sh), un daemon open source con app iOS e Android, puoi avviare e seguire dal telefono agenti Claude Code sui tuoi progetti. Il second brain prepara il contesto e il prompt; tu avvii l'agente dall'app; la chiusura serale vede i suoi commit come sempre. Nel vault non cambia nulla. Leggi [docs/remote-agents-paseo.md](docs/remote-agents-paseo.md) (in inglese) **prima di installarlo**: le impostazioni predefinite di Paseo (nessuna password, strumenti di controllo degli agenti, aggiornamenti Windows non firmati) vanno irrobustite, e la guida elenca le impostazioni esatte per Windows, macOS e una VM Linux.
+
 ## Sistemi supportati
 
 | Parte | macOS | Linux | Windows |

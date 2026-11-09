@@ -168,6 +168,10 @@ The `scaffold` module is optional. It creates `scaffold/registro.md` (the projec
 - `scripts/repo-non-tracciato.py` tells whether the current folder is an untracked git repo. It never writes by itself. With the hook in `scaffold/hook-avvio.md` Claude Code can remind you when you open such a repo. That hook touches your global `~/.claude` settings, so the wizard does **not** install it: the file shows the two lines to paste, and you decide.
 - A repo is "tracked" when its path is in the `Repo:` field of a `projects/*/STATE.md`.
 
+## Remote agents from your phone (optional)
+
+You can start and follow Claude Code agents on your projects from a phone with [Paseo](https://paseo.sh), an open-source daemon with iOS and Android apps. The second brain prepares the context and the prompt; you start the agent from the app; the evening close sees its commits as usual. Nothing in the vault changes. Read [docs/remote-agents-paseo.md](docs/remote-agents-paseo.md) **before installing**: Paseo's defaults (no password, agent-control tools, unsigned Windows updates) need hardening, and the guide lists the exact settings for Windows, macOS and a Linux VM.
+
 ## Platform support
 
 | Part | macOS | Linux | Windows |

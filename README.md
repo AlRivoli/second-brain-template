@@ -99,7 +99,7 @@ If a calendar cannot be read, the assistant does not answer about free hours ins
 
 ## The dashboard
 
-`python3 scripts/dashboard/server.py`, then open http://127.0.0.1:8765. It listens only on your computer. The menu shows the pages of the modules you chose; a page you did not choose is not there. `second-brain.dashboard` (see "Scheduled jobs") keeps it running. On Linux and Windows the job status buttons stay empty because they use launchd.
+`python3 scripts/dashboard/server.py`, then open http://127.0.0.1:8765. It listens only on your computer. The menu shows the pages of the modules you chose; a page you did not choose is not there. `second-brain.dashboard` (see "Scheduled jobs") keeps it running: if it stops, even cleanly, it comes back by itself (launchd KeepAlive, systemd `Restart=always`, on Windows a check every 10 minutes). On Linux and Windows the job status buttons stay empty because they use launchd.
 
 ## When a page is empty
 

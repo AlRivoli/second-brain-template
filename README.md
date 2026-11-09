@@ -101,6 +101,8 @@ If a calendar cannot be read, the assistant does not answer about free hours ins
 
 `python3 scripts/dashboard/server.py`, then open http://127.0.0.1:8765. It listens only on your computer. The menu shows the pages of the modules you chose; a page you did not choose is not there. `second-brain.dashboard` (see "Scheduled jobs") keeps it running: if it stops, even cleanly, it comes back by itself (launchd KeepAlive, systemd `Restart=always`, on Windows a check every 10 minutes). On Linux and Windows the job status buttons stay empty because they use launchd.
 
+**Tray icon** (`second-brain.tray`, Windows and macOS, starts at login): a dot in the notification area (Windows) or the menu bar (macOS), green when the dashboard answers and red when it does not (checked every 30 seconds). Its menu has three parts. **Dashboard**: open it, start or restart it, stop it (on Windows the 10-minute check starts it again; on macOS it stays stopped until you start it or log in again). **Avvia job**: start `morning`, `feed + radar` (radar starts when feed has ended), `chiusura`, `bozze` or `pulizia` now; a job that is not registered is not listed. **Notifiche**: a notification when the dashboard goes down or comes back and when a job ends with an error (once per run), with a switch that turns them off until you close the tray. **Esci** closes only the icon. Native code only: `scripts/tray/tray.ps1` (Windows PowerShell 5.1 and Windows Forms) and `scripts/tray/SecondBrainTray.swift` (AppKit; `install_jobs.py` compiles it with `swiftc` into `~/Library/Application Support/second-brain/`, which needs the Xcode Command Line Tools). `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tray/tray.ps1 -SelfTest` prints the dashboard check, the menu and the exact command of each item without showing anything. The macOS version has not been compiled or run yet. On Windows the icon first appears at the next login; to see it now: `schtasks /run /tn second-brain.tray`.
+
 ## When a page is empty
 
 A new install starts with empty pages on purpose: they fill when something has run once. Nothing is broken if you see these.
@@ -151,6 +153,7 @@ Subagents: `researcher` (reads the news and writes cards in `radar/`), `reviewer
 | `second-brain.feed` (optional, chosen in setup) | Monday 07:00 | `scripts/feed.py`: collects the news from `memory/feeds.md` into `inbox/` (built-in collector; skip it if you use n8n) |
 | `second-brain.radar` (optional, chosen in setup) | Monday 07:30 | filters the news in `inbox/` for your projects, with the models you chose |
 | `second-brain.bozze` (optional, chosen in setup) | Monday 08:30 | `/bozze-settimana`: three post drafts |
+| `second-brain.tray` | at login (macOS and Windows) | the tray or menu-bar icon (see "The dashboard"); "Esci" closes it until the next login |
 
 The text of a news item is untrusted: every title goes through `content-guard` (hidden-instruction patterns) before any model sees it. Logs are in `~/Library/Logs` (macOS), `$XDG_STATE_HOME/second-brain` or `~/.local/state/second-brain` (Linux), `%LOCALAPPDATA%\second-brain\logs` (Windows).
 
@@ -189,6 +192,7 @@ You can start and follow Claude Code agents on your projects from a phone with [
 | Calendar: `ics` and `caldav` | tested with fake data and a fake server | same | same |
 | Scheduled jobs (`install_jobs.py`) | yes | files generated and tested, not registered for real yet | same |
 | Morning job (`second-brain.morning`) | yes | not yet | file generated and tested, not registered for real yet |
+| Tray icon (`second-brain.tray`) | written, not tested (never compiled) | no | tested: self-test and a real start, menu items not clicked yet |
 
 "CI tests pass" means automated tests on a clean runner, not that someone used it. If you try it on Linux or Windows, please report what broke.
 
@@ -206,12 +210,13 @@ Claude Code sends the files it reads to the model. Put confidential notes in the
 - **"è leggibile da altri utenti" (the message is in Italian in v0.1)**: `chmod 600` on that file.
 - **On Windows, `./scripts/verify` does not start inside Claude Code** (Git Bash cannot run the `python3` shebang): use `py -3 scripts/verify`. The commands and the permissions already allow it.
 - **On Windows the jobs run without a window**: Task Scheduler starts them through `conhost.exe --headless`, so no empty CMD window appears. If a job registered before this change still opens one, run `py -3 install_jobs.py` again to re-register it.
+- **Why the tray job uses `-ExecutionPolicy Bypass`**: the default Windows policy (Restricted) blocks every script, including `tray.ps1`. The bypass applies only to that one PowerShell process and only to that one file of this repo; it does not change your system policy. Signing the script would avoid it, but is out of scope for now. If your organisation forbids it, uninstall only this job: `py -3 install_jobs.py --uninstall --only tray`.
 - **`scripts/verify` complains**: the message names the file and line; fix that and run it again.
 - **Jobs do not run on Linux when you are logged out**: `loginctl enable-linger $USER`.
 
 ## Update and uninstall
 
-Update: `git pull`, then `python3 doctor.py` and `python3 scripts/verify`. Your files are ignored by git or untouched by the pull. Uninstall: `python3 install_jobs.py --uninstall`, then delete the folder. Claude Code and Ollama have their own uninstall guides.
+Update: `git pull`, then `python3 doctor.py` and `python3 scripts/verify`. Your files are ignored by git or untouched by the pull. Uninstall: `python3 install_jobs.py --uninstall`, then delete the folder. On macOS also delete `~/Library/Application Support/second-brain/` (the compiled tray icon). Claude Code and Ollama have their own uninstall guides.
 
 ## Licence
 

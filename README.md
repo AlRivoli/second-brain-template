@@ -143,6 +143,8 @@ Start `claude` in the vault folder and type:
 
 Subagents: `researcher` (reads the news and writes cards in `radar/`), `reviewer` (reviews the week, writes nothing), `writer` (drafts, only with `/post`). None of them can start another.
 
+Your skills follow your projects. The *Stack* column of `projects/INDEX.md` is compared with the *Skills* line of `memory/about-me.md`: `/nuovo-progetto` asks for the stack and proposes the technologies you do not list yet; `/chiudi-giornata` does the same with you in front of it, and in the unattended run it only writes one line per missing technology in *Da confermare* of today's `daily/` (for example: ``Aggiungere `Postgres` alle competenze in memory/about-me.md (da progetto api-ordini)``). `memory/about-me.md` changes only after your yes, one item at a time. The confidential folder is not in the index, so it is never read for this. A technology you decline comes back on the next day with activity: there is no list of declined items yet.
+
 ## Scheduled jobs
 
 `scripts/jobs.json` defines the jobs once; `python3 install_jobs.py` registers them with the scheduler of your system: launchd on macOS, systemd user timers on Linux, Task Scheduler on Windows. Start with `python3 install_jobs.py --dry-run` to read what it would do. `python3 install_jobs.py --uninstall` removes them. Each job is safe to start twice, so catching up after the computer was off is harmless. The jobs of a module you chose are registered; the other optional ones need `--all`.

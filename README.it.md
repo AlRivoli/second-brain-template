@@ -143,6 +143,8 @@ Avvia `claude` nella cartella del vault e scrivi:
 
 Subagenti: `researcher` (legge le novità e scrive schede in `radar/`), `reviewer` (rivede la settimana, non scrive), `writer` (bozze, solo con `/post`). Nessuno può lanciarne un altro.
 
+Le tue competenze seguono i progetti. La colonna *Stack* di `projects/INDEX.md` viene confrontata con la riga *Skills* di `memory/about-me.md`: `/nuovo-progetto` chiede lo stack e propone le tecnologie che non hai ancora; `/chiudi-giornata` fa lo stesso se ci sei, e nella run non presidiata scrive solo una riga per tecnologia mancante in *Da confermare* del `daily/` di oggi (per esempio: ``Aggiungere `Postgres` alle competenze in memory/about-me.md (da progetto api-ordini)``). `memory/about-me.md` cambia solo dopo il tuo sì, voce per voce. La cartella riservata non è nell'indice, quindi per questo non viene mai letta. Una tecnologia che rifiuti torna nel primo giorno con attività: non c'è ancora un elenco delle voci rifiutate.
+
 ## Job pianificati
 
 `scripts/jobs.json` definisce i job una volta sola; `python3 install_jobs.py` li registra nello scheduler del tuo sistema: launchd su macOS, timer utente di systemd su Linux, Utilità di pianificazione su Windows. Comincia con `python3 install_jobs.py --dry-run` per leggere cosa farebbe. `python3 install_jobs.py --uninstall` li toglie. Ogni job si può lanciare due volte senza danni, quindi recuperare dopo che il computer era spento non fa male. I job di un modulo che hai scelto si registrano; gli altri facoltativi vogliono `--all`.

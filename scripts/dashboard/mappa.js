@@ -401,6 +401,7 @@
     return [
       h('h2', '', [n.nome, h('span', 'sub', [n.tipo === 'senza' ? 'da etichettare' : n.tipo + (n.priorita ? ' · priorità ' + n.priorita : '')])]),
       n.task.length ? h('p', 'sub conto-nodo', [contoAperti(n)]) : null,   // con zero task lo dice già il paragrafo vuoto sotto
+      n.tipo === 'progetto' && n.haCartella ? sceltaPriorita(n) : null,   // i progetti del lavoro non hanno cartella: la loro riga non si tocca
       p && p.doveSono ? h('p', 'dove-sono', [h('b', '', ['Dove sono ']), taglia(p.doveSono, 260)]) : null,
       c ? h('p', 'sub', ['Ultimo commit: ' + taglia(c.messaggio, 80) + (c.ramo ? ' (' + c.ramo + ')' : '')]) : null,
       n.task.length ? h('ul', 'task-elenco', n.task.map(t => rigaTask(n, t))) : h('p', 'vuoto', [n.nome === 'Social' ? 'Nessuna bozza da pubblicare.' : 'Nessun task nel piano con questo tag.']),
@@ -457,6 +458,10 @@
     cartella: 'Cartella non valida per questo task.',
     ripetuto: 'Già avviato: guarda il Terminale.',
     apertura: 'Non sono riuscito ad aprire il Terminale.',
+    esiste: 'Esiste già un progetto con questo nome.',
+    template: 'Mancano templates/STATE.md o templates/project-index-row.md.',
+    riga: 'La riga del progetto in INDEX.md non si legge: correggi in Obsidian.',
+    errore: 'Non è andata: riprova o guarda il log della dashboard.',
   };
   function errore(r) {
     if (r.stato === 404) { toast('La voce è cambiata, ricarico.'); carica(); }
@@ -518,6 +523,69 @@
     d.showModal();
     campo.focus();
   }
+  // scrive alta, media o bassa nella riga del progetto in projects/INDEX.md
+  const PRIORITA = ['alta', 'media', 'bassa'];
+  function sceltaPriorita(n) {
+    return h('div', 'scelta minore', PRIORITA.map(p => {
+      const b = bottone(p, '', () => cambiaPriorita(n, p));
+      b.setAttribute('aria-pressed', String(n.priorita === p));
+      return b;
+    }), { role: 'group', 'aria-label': 'Priorità del progetto' });
+  }
+  async function cambiaPriorita(n, priorita) {
+    if (n.priorita === priorita) return;
+    if (inProva()) return toast('Modalità prova: nessuna modifica.');
+    try {
+      const r = await invia('/api/mappa/priorita', { nome: n.nome, priorita });
+      if (!r.ok) return errore(r);
+      toast('Priorità di ' + n.nome + ': ' + priorita + '.');
+      await carica();
+    } catch (e) { toast('Non è andata: ' + e.message); }
+  }
+  // crea projects/<nome>/STATE.md e la riga in INDEX.md, come /nuovo-progetto; il server controlla di nuovo ogni campo
+  const CAMPO_NON_VALIDO = {
+    nome: 'Nome non valido: solo lettere minuscole, cifre e trattini.',
+    repo: 'Repo non valido: serve il percorso assoluto di una cartella con un repo git.',
+    stack: 'Stack non valido: una riga sola, senza | < >.',
+    priorita: 'Priorità non valida.',
+  };
+  function nuovoProgetto() {
+    if (inProva()) return toast('Modalità prova: nessuna modifica.');
+    const d = dialogo('mappa-progetto', 'Nuovo progetto');
+    const campo = (etichetta, attr) => {
+      const i = h('input', '', [], Object.assign({ type: 'text', autocomplete: 'off' }, attr));
+      return [h('label', '', [etichetta, i]), i];
+    };
+    const [rigaNome, nome] = campo('Nome', { required: '', maxlength: '60', pattern: '[a-z0-9][a-z0-9-]*', title: 'Lettere minuscole, cifre e trattini', placeholder: 'il-mio-progetto' });
+    const [rigaRepo, repo] = campo('Repo (facoltativo)', { maxlength: '400', placeholder: 'Percorso assoluto della cartella del repo' });
+    const [rigaStack, stack] = campo('Stack (facoltativo)', { maxlength: String(TESTO_MASSIMO), placeholder: 'TypeScript, Fastify, Postgres' });
+    const priorita = h('select', '', [h('option', '', ['da decidere'], { value: '' })].concat(PRIORITA.map(p => h('option', '', [p], { value: p }))));
+    const crea = bottone('Crea', 'primario', () => {});
+    crea.type = 'submit';
+    const form = h('form', '', [
+      h('h2', '', ['Nuovo progetto']),
+      h('p', 'sub', ['Crea projects/<nome>/STATE.md e la riga in INDEX.md. Non per i progetti di lavoro.']),
+      rigaNome, rigaRepo, rigaStack, h('label', '', ['Priorità', priorita]),
+      h('div', 'riga-azioni', [crea, bottone('Annulla', '', () => d.close())]),
+    ]);
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      if (!form.reportValidity()) return;
+      crea.disabled = true;
+      try {
+        const r = await invia('/api/mappa/progetto', { nome: nome.value.trim(), repo: repo.value.trim(), stack: stack.value.trim(), priorita: priorita.value });
+        if (r.stato === 400) { crea.disabled = false; return toast(CAMPO_NON_VALIDO[r.json && r.json.errore] || 'Dati non validi.'); }   // il dialogo resta aperto: si corregge il campo
+        d.close();
+        if (!r.ok) return errore(r);
+        toast('Progetto ' + r.json.nome + ' creato.');
+        await carica();
+        if (nodoPer(r.json.nome)) scegli(r.json.nome);
+      } catch (x) { d.close(); toast('Non è andata: ' + x.message); }
+    });
+    d.replaceChildren(form);
+    d.showModal();
+    nome.focus();
+  }
   function conferma(n, t) {
     if (inProva()) return toast('Modalità prova: nessuna modifica.');
     const d = dialogo('mappa-avvia', 'Avvia in Claude');
@@ -560,7 +628,7 @@
     svg.addEventListener('pointerleave', () => { if (!fuocoNeiSatelliti()) apri(fissato); });
     const legenda = h('div', 'legenda', STATI.map(st => h('span', '', [h('i', 'punto st-' + st), NOME_STATO[st]])));
     $('mappa-area').replaceChildren(h('div', 'mappa-box', [
-      h('div', 'mappa-testa', [h('h2', '', ['Mappa del lavoro']), filtri]), svg, legenda, zoom,
+      h('div', 'mappa-testa', [h('h2', '', ['Mappa del lavoro']), h('div', 'mappa-testa-azioni', [filtri, bottone('Nuovo progetto', '', nuovoProgetto)])]), svg, legenda, zoom,
       h('ul', 'mappa-lista', [], { id: 'mappa-lista', 'aria-label': 'Nodi e task, in elenco' }),
     ]), h('p', 'nota-mappa', ['Il numero sul nodo = task aperti nel piano. Social: bozze da pubblicare.']));
     new ResizeObserver(() => {

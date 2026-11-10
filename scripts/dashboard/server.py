@@ -962,13 +962,26 @@ ULTIMI_AVVII = {}  # (data, testo) -> momento dell'ultimo avvio: ignora il doppi
 BLOCCO_AVVII = threading.Lock()
 
 
-def avvia_claude(data, testo, esegui=None, piano_file=None, vault=None, cartella_avvii=None, sistema=None, adesso=time.monotonic):
-    """Apre il Terminale con `claude` nella cartella del nodo della voce e la mette in corso. Solo macOS.
-    NotImplementedError: non è un Mac. LookupError: voce assente. RuntimeError con codice: doppia, cartella, ripetuto, apertura.
-    Il testo della voce finisce solo in un file letto da `cat`: mai in una stringa di shell o di AppleScript."""
-    if (sistema or sys.platform) != "darwin":
-        raise NotImplementedError("solo macOS")
-    esegui = esegui or subprocess.run
+def _apri_console_windows(cartella, prompt, esegui=None, quale=None):
+    """Una console nuova con `claude.exe` nella cartella. Senza shell: il prompt è un solo argomento, citato da CreateProcess.
+    Un claude.cmd o .ps1 non si lancia: passerebbe da cmd.exe o PowerShell, che rileggono &, %VAR% e virgolette nel testo della voce."""
+    claude = (quale or shutil.which)("claude")
+    if not claude or not claude.lower().endswith(".exe"):
+        raise RuntimeError("apertura")
+    try:
+        (esegui or subprocess.Popen)([claude, prompt], cwd=str(cartella), creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0x10))
+    except (OSError, subprocess.SubprocessError):
+        raise RuntimeError("apertura")
+
+
+def avvia_claude(data, testo, esegui=None, piano_file=None, vault=None, cartella_avvii=None, sistema=None, adesso=time.monotonic, quale=None):
+    """Apre un terminale con `claude` nella cartella del nodo della voce e la mette in corso. macOS (Terminale) e Windows (console nuova).
+    NotImplementedError: altro sistema. LookupError: voce assente. RuntimeError con codice: doppia, cartella, ripetuto, apertura.
+    Il testo della voce non finisce mai in una stringa di shell o di AppleScript: su macOS sta in un file letto da `cat`,
+    su Windows è un argomento di claude.exe lanciato senza shell."""
+    sistema = sistema or sys.platform
+    if sistema not in ("darwin", "win32"):
+        raise NotImplementedError("solo macOS e Windows")
     vault = vault or VAULT
     piano_file = piano_file or vault / "docs" / "piano.md"
     trovati = [(n, t) for n in mappa(datetime.now(), piano_file, vault)["nodi"] for t in n["task"] if t["data"] == data and t["testo"] == testo]
@@ -987,28 +1000,31 @@ def avvia_claude(data, testo, esegui=None, piano_file=None, vault=None, cartella
         if chiave in ULTIMI_AVVII and adesso() - ULTIMI_AVVII[chiave] < 10:
             raise RuntimeError("ripetuto")
         ULTIMI_AVVII[chiave] = adesso()
+    prompt = ("Task dal piano del vault (nodo #%s): %s. Lavoraci in questa cartella seguendo le regole del progetto; "
+              "quando hai finito dimmelo, la spunta la metto io dalla dashboard.") % (nodo["nome"], task["vista"])
     try:
-        cartella_avvii = cartella_avvii or percorsi.cartella_log() / "avvii-claude"
-        cartella_avvii.mkdir(mode=0o700, parents=True, exist_ok=True)
-        for f in cartella_avvii.iterdir():  # file di avvii vecchi di una settimana
-            if f.is_file() and f.stat().st_mtime < time.time() - 7 * 86400:
-                f.unlink()
-        base = cartella_avvii / datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-        file_prompt, file_comando = base.with_suffix(".txt"), base.with_suffix(".command")
-        prompt = ("Task dal piano del vault (nodo #%s): %s. Lavoraci in questa cartella seguendo le regole del progetto; "
-                  "quando hai finito dimmelo, la spunta la metto io dalla dashboard.") % (nodo["nome"], task["vista"])
-        for file, contenuto, modo in (
-                (file_prompt, prompt, 0o600),
-                (file_comando, "#!/bin/zsh -l\ncd %s && exec claude \"$(cat %s)\"\n" % (shlex.quote(str(cartella)), shlex.quote(str(file_prompt))), 0o700)):
-            fd = os.open(file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, modo)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(contenuto)
-        try:
-            r = esegui(["/usr/bin/open", "-a", "Terminal", str(file_comando)], check=False, timeout=10)
-        except subprocess.SubprocessError:
-            raise RuntimeError("apertura")
-        if r.returncode != 0:
-            raise RuntimeError("apertura")
+        if sistema == "win32":
+            _apri_console_windows(cartella, prompt, esegui, quale)
+        else:
+            cartella_avvii = cartella_avvii or percorsi.cartella_log() / "avvii-claude"
+            cartella_avvii.mkdir(mode=0o700, parents=True, exist_ok=True)
+            for f in cartella_avvii.iterdir():  # file di avvii vecchi di una settimana
+                if f.is_file() and f.stat().st_mtime < time.time() - 7 * 86400:
+                    f.unlink()
+            base = cartella_avvii / datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            file_prompt, file_comando = base.with_suffix(".txt"), base.with_suffix(".command")
+            for file, contenuto, modo in (
+                    (file_prompt, prompt, 0o600),
+                    (file_comando, "#!/bin/zsh -l\ncd %s && exec claude \"$(cat %s)\"\n" % (shlex.quote(str(cartella)), shlex.quote(str(file_prompt))), 0o700)):
+                fd = os.open(file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, modo)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(contenuto)
+            try:
+                r = (esegui or subprocess.run)(["/usr/bin/open", "-a", "Terminal", str(file_comando)], check=False, timeout=10)
+            except subprocess.SubprocessError:
+                raise RuntimeError("apertura")
+            if r.returncode != 0:
+                raise RuntimeError("apertura")
     except BaseException:
         ULTIMI_AVVII.pop(chiave, None)  # un avvio fallito si può riprovare subito
         raise

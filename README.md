@@ -201,7 +201,7 @@ You can start and follow Claude Code agents on your projects from a phone with [
 
 ## Privacy
 
-Claude Code sends the files it reads to the model. Put confidential notes in the folder the `riservata` module made (ignored by git and blocked by `deny` rules) and read [ADR-002](docs/adr/ADR-002-confidential-notes.md) for the limits of that block: the rules do not stop a script you run yourself. Your name, notes and memory files stay in your copy: `setup.py` writes them from the `*.example.md` files and git ignores them. Calendar addresses and passwords stay outside the vault. The dashboard listens only on `127.0.0.1`.
+Claude Code sends the files it reads to the model. Put confidential notes in the folder the `riservata` module made (ignored by git and blocked by `deny` rules) and read [ADR-002](docs/adr/ADR-002-confidential-notes.md) for the limits of that block: the rules do not stop a script you run yourself. Your name, notes and memory files stay in your copy: `setup.py` writes them from the `*.example.md` files and git ignores them. Calendar addresses and passwords stay outside the vault. The dashboard listens only on `127.0.0.1`. The Obsidian Sync core plugin is off in `.obsidian/`: turning it on would also sync the git-ignored confidential folder.
 
 ## Troubleshooting
 

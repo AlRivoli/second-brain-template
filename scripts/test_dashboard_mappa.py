@@ -408,6 +408,26 @@ class AvvioTest(unittest.TestCase):
         self.avvia(v, av)
         self.assertIn("- [~] #alfa uno", (v / "docs" / "piano.md").read_text(encoding="utf-8"))
 
+    def test_due_avvii_nello_stesso_istante_non_si_scontrano(self):
+        # Su Windows l'orologio avanza a scatti: un avvio fallito e la riprova nello stesso scatto prendevano lo stesso nome di file
+        # e la riprova moriva con FileExistsError. Qui l'orologio è fermo, così il caso si ripete a ogni esecuzione.
+        class OrologioFermo(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 11, 11, 8, 53, 5, 565115)
+
+        vero = server.datetime
+        server.datetime = OrologioFermo
+        self.addCleanup(setattr, server, "datetime", vero)
+        v, av = self.prepara()
+        with self.assertRaises(RuntimeError):
+            self.avvia(v, av, codice=1)
+        server.ULTIMI_AVVII.clear()
+        self.avvia(v, av)
+        self.assertEqual(len(list(av.glob("*.txt"))), 2, "ogni avvio ha il suo file")
+        self.assertEqual(len(list(av.glob("*.command"))), 2)
+        self.assertIn("- [~] #alfa uno", (v / "docs" / "piano.md").read_text(encoding="utf-8"))
+
     def test_avvio_rifiuta_cartella_lavoro(self):
         v, av = self.prepara("## A\n- [ ] #x uno\n")
         (v / "projects" / "INDEX.md").write_text("| [[projects%s%sx/STATE\\|x]] | S | S | alta | 2026-11-09 |\n" % ("/", "lavoro" + "/"), encoding="utf-8")
@@ -460,6 +480,52 @@ class AvvioTest(unittest.TestCase):
         v, av = self.prepara()
         with self.assertRaises(NotImplementedError):
             self.avvia(v, av, sistema="linux")
+
+    def avvia_windows(self, v, av, testo="#alfa uno", claude=r"C:\bin\claude.exe", errore=None):
+        chiamate = []
+
+        def finto(args, **kw):
+            chiamate.append((args, kw))
+            if errore:
+                raise errore
+
+        r = server.avvia_claude(None, testo, esegui=finto, piano_file=v / "docs" / "piano.md", vault=v, cartella_avvii=av,
+                                sistema="win32", quale=lambda nome: claude)
+        return r, chiamate
+
+    def test_avvio_windows_senza_shell_per_testi_ostili(self):
+        # il testo della voce è un solo argomento di claude.exe: niente cmd.exe né PowerShell che lo rileggano
+        for ostile in ('" --dangerously-skip-permissions "', "& calc.exe", "%PATH%", "a'b\"c"):
+            v, av = self.prepara("## A\n- [ ] #alfa %s\n" % ostile)
+            r, chiamate = self.avvia_windows(v, av, "#alfa " + ostile)
+            args, kw = chiamate[0]
+            self.assertEqual(args[0], r"C:\bin\claude.exe", ostile)
+            self.assertEqual(len(args), 2)
+            self.assertTrue(args[1].startswith("Task dal piano"), args[1])  # non può essere letto come un'opzione
+            self.assertIn(ostile, args[1])
+            self.assertFalse(kw.get("shell"))
+            self.assertEqual(kw["cwd"], str(v / "repo-alfa"))
+            self.assertEqual(kw["creationflags"], 0x10)  # CREATE_NEW_CONSOLE
+            self.assertEqual(r["cartella"], str(v / "repo-alfa"))
+            self.assertFalse(av.exists())  # su Windows non serve nessun file di avvio
+            self.assertIn("- [~] #alfa", (v / "docs" / "piano.md").read_text(encoding="utf-8"))
+
+    def test_avvio_windows_solo_con_claude_exe(self):
+        # un claude.cmd passerebbe da cmd.exe, che rilegge & e %VAR% nel testo della voce
+        for claude in (None, r"C:\npm\claude.cmd", r"C:\npm\claude.ps1"):
+            v, av = self.prepara()
+            with self.assertRaises(RuntimeError) as c:
+                self.avvia_windows(v, av, claude=claude)
+            self.assertEqual(str(c.exception), "apertura")
+            self.assertEqual(server.ULTIMI_AVVII, {})
+            self.assertIn("- [ ] #alfa uno", (v / "docs" / "piano.md").read_text(encoding="utf-8"))
+
+    def test_avvio_windows_errore_di_apertura(self):
+        v, av = self.prepara()
+        with self.assertRaises(RuntimeError) as c:
+            self.avvia_windows(v, av, errore=OSError("non parte"))
+        self.assertEqual(str(c.exception), "apertura")
+        self.assertEqual(server.ULTIMI_AVVII, {})
 
     def test_avvio_pulisce_i_file_vecchi(self):
         v, av = self.prepara()

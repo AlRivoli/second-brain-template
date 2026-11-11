@@ -523,7 +523,7 @@
   function errore(r) {
     if (r.stato === 404) { toast('La voce è cambiata, ricarico.'); carica(); }
     else if (r.stato === 409) toast(ERRORI_409[r.json && r.json.errore] || ERRORI_409.doppia);
-    else if (r.stato === 501) toast('Avvio disponibile solo su macOS.');
+    else if (r.stato === 501) toast('Avvio disponibile solo su macOS e Windows.');
     else toast('Non è andata: errore ' + r.stato + '.');
   }
   const inProva = () => !!new URLSearchParams(location.search).get('prova');

@@ -51,7 +51,7 @@ def installa(sorgente, home, applica):
     da_copiare = [n for n in FILE if not (cartella / n).is_file() or (cartella / n).read_bytes() != (sorgente / n).read_bytes()]
     modifiche = ["copia %s in %s" % (n, cartella) for n in da_copiare]
     if not _registrato(dati):
-        modifiche.append("registra in %s: PreToolUse %s → %s" % (settings, MATCHER, _comando(home)))
+        modifiche.append("registra in %s: PreToolUse %s -> %s" % (settings, MATCHER, _comando(home)))
     if not applica or not modifiche:
         return modifiche
     cartella.mkdir(parents=True, exist_ok=True)
@@ -78,6 +78,10 @@ def controlla(sorgente, home):
 
 
 def main(argv):
+    if hasattr(sys.stdout, "reconfigure"):
+        # Windows: una console o una pipe in cp1252 non stampa ogni carattere dei percorsi. Meglio un "?" che un traceback
+        # prima della domanda, con l'hook non installato.
+        sys.stdout.reconfigure(errors="replace")
     home = Path.home()
     if "--controlla" in argv:
         if not (home / ".claude").is_dir():

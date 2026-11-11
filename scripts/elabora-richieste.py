@@ -22,7 +22,7 @@ import richieste as rq  # noqa: E402
 
 VAULT = Path(__file__).resolve().parent.parent
 LOGS = percorsi.cartella_log()
-ESCLUSI = ("lavoro",)  # note di lavoro: mai verso un LLM in cloud (ADR-001, ADR-002)
+ESCLUSI = ("lavoro", "_private")  # note di lavoro e riservate: mai verso un LLM in cloud (ADR-001, ADR-002)
 LOCK_SCADUTO = 30 * 60
 CAMPI = ("titolo", "descrizione", "didascalia", "hashtag", "testo_alternativo", "come_pubblicare")
 FORMATO_SCHEDA = {"carosello": "carosello", "immagine": "immagine", "storia": "storia", "video": "video"}
@@ -139,6 +139,27 @@ def elabora(file_rq, vault=VAULT, run=subprocess.run, adesso=None, log=print):
     return n
 
 
+def cartelle_escluse(vault=VAULT):
+    """I nomi (in minuscolo) delle cartelle di projects/ che non vanno mai a un modello: ESCLUSI più la cartella riservata
+    scelta al setup (moduli.riservata.cartella), come fa scripts/verify."""
+    nomi = set(ESCLUSI)
+    try:
+        scelta = json.loads((Path(vault) / "config.json").read_text(encoding="utf-8"))["moduli"]["riservata"]["cartella"].replace("\\", "/")
+        if scelta.startswith("projects/") and scelta.count("/") == 1:
+            nomi.add(scelta.split("/")[1])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        pass
+    return {n.casefold() for n in nomi}
+
+
+def da_elaborare(vault=VAULT):
+    """I file di richieste con almeno una richiesta nuova, fuori dalle cartelle escluse."""
+    esclusi = cartelle_escluse(vault)
+    # casefold: su NTFS e APFS "_Private" è la stessa cartella di "_private"
+    return [f for f in sorted((Path(vault) / "projects").glob("*/post-*-richieste.json")) if f.parent.name.casefold() not in esclusi
+            and any(r.get("stato") == "nuova" for r in rq.leggi(f, "", "")["richieste"])]
+
+
 def main():
     lock = LOGS / "second-brain-richieste.lock"
     if not _lock(lock):
@@ -146,8 +167,7 @@ def main():
         return 0
     try:
         while True:  # finché la dashboard ne aggiunge mentre lavoro
-            file = [f for f in sorted((VAULT / "projects").glob("*/post-*-richieste.json")) if f.parent.name not in ESCLUSI
-                    and any(r.get("stato") == "nuova" for r in rq.leggi(f, "", "")["richieste"])]
+            file = da_elaborare()
             if not file:
                 return 0
             for f in file:

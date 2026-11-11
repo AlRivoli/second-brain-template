@@ -164,7 +164,7 @@ The text of a news item is untrusted: every title goes through `content-guard` (
 
 - `python3 scripts/verify` checks the vault rules: short STATE files, a consistent `INDEX`, valid links, that this README mentions every job and command, and the `scaffold/` registry if you have one. Run it after any change to a STATE or the index; `/chiudi-giornata` runs it for you.
 - `python3 doctor.py` checks Python, git, Claude Code, `verify`, and what your choices need (Ollama running, each local model downloaded, enough RAM, n8n if you picked it). `--ci` checks only the required items.
-- Secret scan: `scripts/hooks/pre-commit` runs gitleaks on what you are about to commit and blocks the commit if it finds a secret. Turn it on once per clone with `git config core.hooksPath scripts/hooks`; it needs [gitleaks](https://github.com/gitleaks/gitleaks) installed (`doctor.py` shows how).
+- Secret scan: `scripts/hooks/pre-commit` runs gitleaks on what you are about to commit and blocks the commit if it finds a secret. Turn it on once per clone with `git config core.hooksPath scripts/hooks`; it needs [gitleaks](https://github.com/gitleaks/gitleaks) installed (`doctor.py` shows how). `doctor.py` also tells you when the hook is not switched on in this clone: a new clone or worktree commits without these checks until you run that command.
 
 ## Track the repos you already have
 

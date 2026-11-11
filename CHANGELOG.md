@@ -31,6 +31,7 @@ All notable changes to this project are written here. The format follows [Keep a
 
 ### Fixed
 - The `chiusura` job logged to `second-brain-chiusura.log` while `chiudi-giornata.py` writes `second-brain-chiudi.log`, so the dashboard showed "not started" for a job that ran every day. `jobs.json` has a `log` key per job; `chiusura` sets it.
+- "Avvia in Claude": the launch files were named from the clock alone. Where the clock moves in steps (Windows), a failed launch and its retry in the same step got the same name and the retry died with `FileExistsError`; the test for it failed about one run in two. The name now ends with a random suffix.
 
 ## [0.1.0] - 2026-11-03
 

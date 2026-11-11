@@ -408,6 +408,26 @@ class AvvioTest(unittest.TestCase):
         self.avvia(v, av)
         self.assertIn("- [~] #alfa uno", (v / "docs" / "piano.md").read_text(encoding="utf-8"))
 
+    def test_due_avvii_nello_stesso_istante_non_si_scontrano(self):
+        # Su Windows l'orologio avanza a scatti: un avvio fallito e la riprova nello stesso scatto prendevano lo stesso nome di file
+        # e la riprova moriva con FileExistsError. Qui l'orologio è fermo, così il caso si ripete a ogni esecuzione.
+        class OrologioFermo(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 11, 11, 8, 53, 5, 565115)
+
+        vero = server.datetime
+        server.datetime = OrologioFermo
+        self.addCleanup(setattr, server, "datetime", vero)
+        v, av = self.prepara()
+        with self.assertRaises(RuntimeError):
+            self.avvia(v, av, codice=1)
+        server.ULTIMI_AVVII.clear()
+        self.avvia(v, av)
+        self.assertEqual(len(list(av.glob("*.txt"))), 2, "ogni avvio ha il suo file")
+        self.assertEqual(len(list(av.glob("*.command"))), 2)
+        self.assertIn("- [~] #alfa uno", (v / "docs" / "piano.md").read_text(encoding="utf-8"))
+
     def test_avvio_rifiuta_cartella_lavoro(self):
         v, av = self.prepara("## A\n- [ ] #x uno\n")
         (v / "projects" / "INDEX.md").write_text("| [[projects%s%sx/STATE\\|x]] | S | S | alta | 2026-11-09 |\n" % ("/", "lavoro" + "/"), encoding="utf-8")

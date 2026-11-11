@@ -1167,7 +1167,9 @@ def avvia_claude(data, testo, esegui=None, piano_file=None, vault=None, cartella
             for f in cartella_avvii.iterdir():  # file di avvii vecchi di una settimana
                 if f.is_file() and f.stat().st_mtime < time.time() - 7 * 86400:
                     f.unlink()
-            base = cartella_avvii / datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            # L'orologio non basta a rendere unico il nome: su Windows avanza a scatti, e un avvio fallito con la riprova nello
+            # stesso scatto prendevano lo stesso file (FileExistsError). Il suffisso casuale lo rende unico, la data lo tiene leggibile.
+            base = cartella_avvii / (datetime.now().strftime("%Y%m%d-%H%M%S-%f") + "-" + os.urandom(4).hex())
             file_prompt, file_comando = base.with_suffix(".txt"), base.with_suffix(".command")
             for file, contenuto, modo in (
                     (file_prompt, prompt, 0o600),

@@ -241,8 +241,10 @@
     for (const o of layout(visibili(), W, H)) {
       const { n, x, y, r } = o;
       pos.set(n.nome, { x, y, r });
-      const G = s('g', { class: 'nodo' + (n.nome === prossimo ? ' prossimo' : ''), tabindex: 0, role: 'button', 'aria-label': n.nome + ', ' + contoAperti(n) });
-      G.append(s('title', {}, [n.nome + ': ' + contoAperti(n)]), s('circle', { class: 'alone', cx: x, cy: y, r: r + 9 }), s('circle', { class: 'disco', cx: x, cy: y, r }));
+      const daDecidere = !!(n.harness && n.harness.stato === 'da decidere');   // contorno tratteggiato: manca la decisione sull'harness
+      const nota = n.harness && n.harness.stato !== 'senza repo' ? ', harness ' + n.harness.stato : '';
+      const G = s('g', { class: 'nodo' + (n.nome === prossimo ? ' prossimo' : '') + (daDecidere ? ' harness-da-decidere' : ''), tabindex: 0, role: 'button', 'aria-label': n.nome + ', ' + contoAperti(n) + nota });
+      G.append(s('title', {}, [n.nome + ': ' + contoAperti(n) + nota]), s('circle', { class: 'alone', cx: x, cy: y, r: r + 9 }), s('circle', { class: 'disco', cx: x, cy: y, r }));
       const tot = n.task.length;
       if (tot) {
         let a0 = -Math.PI / 2;
@@ -402,6 +404,7 @@
       h('h2', '', [n.nome, h('span', 'sub', [n.tipo === 'senza' ? 'da etichettare' : n.tipo + (n.priorita ? ' · priorità ' + n.priorita : '')])]),
       n.task.length ? h('p', 'sub conto-nodo', [contoAperti(n)]) : null,   // con zero task lo dice già il paragrafo vuoto sotto
       n.tipo === 'progetto' && n.haCartella ? sceltaPriorita(n) : null,   // i progetti del lavoro non hanno cartella: la loro riga non si tocca
+      n.tipo === 'progetto' && n.haCartella && n.harness ? bloccoHarness(n) : null,   // solo se il modulo dell'harness è acceso: senza, il server non manda il campo
       p && p.doveSono ? h('p', 'dove-sono', [h('b', '', ['Dove sono ']), taglia(p.doveSono, 260)]) : null,
       c ? h('p', 'sub', ['Ultimo commit: ' + taglia(c.messaggio, 80) + (c.ramo ? ' (' + c.ramo + ')' : '')]) : null,
       n.task.length ? h('ul', 'task-elenco', n.task.map(t => rigaTask(n, t))) : h('p', 'vuoto', [n.nome === 'Social' ? 'Nessuna bozza da pubblicare.' : 'Nessun task nel piano con questo tag.']),
@@ -414,7 +417,7 @@
   }
   function prossimaAzione() {
     const p = dati.prossima;
-    if (!p) return [h('h2', '', ['Prossima azione']), h('p', 'vuoto', ['Niente di aperto.'])];
+    if (!p) return [h('h2', '', ['Prossima azione']), h('p', 'vuoto', ['Niente di aperto.'])].concat(harnessDaDecidere());
     const n = nodoPer(p.nodo);
     const t = n && n.task.find(x => x.testo === p.testo && x.data === p.data);
     return [
@@ -425,7 +428,58 @@
         n.haCartella ? bottone(t.stato === 'in_corso' ? 'Riavvia in Claude' : 'Avvia in Claude', 'primario', () => conferma(n, t)) : null,
         bottone('Fatto', '', () => cambia(n, t, 'fatto')),
       ]) : null,
+    ].concat(harnessDaDecidere());
+  }
+  // ---- harness per agenti: la decisione sta nello STATE del progetto, lo stato lo legge il server dal repo ----
+  // I progetti con un repo e senza una decisione restano qui finché non rispondi: un silenzio non vale come un no.
+  function harnessDaDecidere() {
+    const nomi = dati.harness && dati.harness.attivo ? dati.harness.daDecidere || [] : [];
+    if (!nomi.length) return [];
+    return [
+      h('h2', 'harness-titolo', ['Harness da decidere']),
+      h('p', 'sub', ['Progetti con un repo e senza una decisione: adeguarli all\'harness per agenti, oppure no.']),
+      h('ul', 'harness-elenco', nomi.map(nome => h('li', '', [bottone(nome, 'link', () => scegli(nome))]))),
     ];
+  }
+  function bloccoHarness(n) {
+    const a = n.harness, r = a.report;
+    if (a.stato === 'senza repo') return null;   // senza un repo non c'è niente da adeguare
+    const testo = 'Harness: ' + a.stato
+      + (r ? ' · ' + r.pass + ' PASS, ' + r.fail + ' FAIL (' + r.fail_alta + ' alti), report del ' + giornoBreve(r.data) : '')
+      + (a.stato === 'escluso' && a.data ? ' dal ' + giornoBreve(a.data) : '');
+    return h('div', 'harness', [
+      h('p', 'sub harness-stato', [testo]),
+      a.decisione === 'adeguare' ? h('p', 'sub', ['Nel repo del progetto lancia /ai-native-harness:audit per misurarlo.']) : null,
+      h('div', 'scelta minore', [
+        a.decisione !== 'adeguare' ? bottone('Adegua all\'harness', '', () => decidiHarness(n, 'adeguare')) : null,
+        a.decisione !== 'non adeguare' ? bottone('Non adeguare questo progetto', '', () => decidiHarness(n, 'non adeguare')) : null,
+      ], { role: 'group', 'aria-label': 'Harness del progetto' }),
+    ]);
+  }
+  // scrive la riga `- **Harness:**` nello STATE del progetto; il server controlla di nuovo progetto e valore
+  function decidiHarness(n, decisione) {
+    if (inProva()) return toast('Modalità prova: nessuna modifica.');
+    const adegua = decisione === 'adeguare';
+    const d = dialogo('mappa-harness', 'Harness del progetto');
+    const ok = bottone(adegua ? 'Adegua' : 'Non adeguare', 'primario', async () => {
+      ok.disabled = true;
+      try {
+        const r = await invia('/api/mappa/harness', { nome: n.nome, decisione });
+        d.close();
+        if (!r.ok) return errore(r);
+        toast(adegua ? 'Segnato. Nel repo lancia /ai-native-harness:audit.' : n.nome + ': non verrà adeguato all\'harness.');
+        await carica();
+      } catch (e) { d.close(); toast('Non è andata: ' + e.message); }
+    });
+    d.replaceChildren(h('form', '', [
+      h('h2', '', [adegua ? 'Adegua all\'harness' : 'Non adeguare questo progetto']),
+      h('p', 'sub', ['Progetto: ' + n.nome]),
+      h('p', 'sub', [adegua
+        ? 'Segno la decisione nello STATE del progetto. L\'audit lo lanci tu nel repo con /ai-native-harness:audit: esegue i check del progetto, quindi solo su un repo di cui ti fidi.'
+        : 'Segno il rifiuto nello STATE, con la data di oggi. Il progetto esce dall\'elenco di quelli da decidere. Puoi cambiare idea da qui quando vuoi.']),
+      h('div', 'riga-azioni', [ok, bottone('Annulla', '', () => d.close())]),
+    ], { method: 'dialog' }));
+    d.showModal();
   }
   function pannello() {
     if (!dati || !$('mappa-dettaglio')) return;
@@ -462,6 +516,9 @@
     template: 'Mancano templates/STATE.md o templates/project-index-row.md.',
     riga: 'La riga del progetto in INDEX.md non si legge: correggi in Obsidian.',
     errore: 'Non è andata: riprova o guarda il log della dashboard.',
+    spento: 'Il modulo dell\'harness non è attivo in config.json.',
+    'senza-repo': 'Questo progetto non ha un repo: non c\'è niente da adeguare.',
+    righe: 'Lo STATE del progetto è già a 20 righe: accorcialo, poi riprova.',
   };
   function errore(r) {
     if (r.stato === 404) { toast('La voce è cambiata, ricarico.'); carica(); }
@@ -548,6 +605,7 @@
     repo: 'Repo non valido: serve il percorso assoluto di una cartella con un repo git.',
     stack: 'Stack non valido: una riga sola, senza | < >.',
     priorita: 'Priorità non valida.',
+    harness: 'Con un repo va scelto cosa fare dell\'harness: anche «da decidere» è una risposta.',
   };
   function nuovoProgetto() {
     if (inProva()) return toast('Modalità prova: nessuna modifica.');
@@ -560,20 +618,30 @@
     const [rigaRepo, repo] = campo('Repo (facoltativo)', { maxlength: '400', placeholder: 'Percorso assoluto della cartella del repo' });
     const [rigaStack, stack] = campo('Stack (facoltativo)', { maxlength: String(TESTO_MASSIMO), placeholder: 'TypeScript, Fastify, Postgres' });
     const priorita = h('select', '', [h('option', '', ['da decidere'], { value: '' })].concat(PRIORITA.map(p => h('option', '', [p], { value: p }))));
+    // Con il modulo dell'harness acceso un progetto con un repo nasce con una decisione: il rifiuto si sceglie per esteso
+    const conHarness = !!(dati && dati.harness && dati.harness.attivo);
+    const harness = h('select', '', [
+      h('option', '', ['scegli…'], { value: '' }),
+      h('option', '', ['Adegua all\'harness'], { value: 'adeguare' }),
+      h('option', '', ['Non adeguare questo progetto'], { value: 'non adeguare' }),
+      h('option', '', ['Da decidere più avanti'], { value: 'da decidere' }),
+    ]);
     const crea = bottone('Crea', 'primario', () => {});
     crea.type = 'submit';
     const form = h('form', '', [
       h('h2', '', ['Nuovo progetto']),
       h('p', 'sub', ['Crea projects/<nome>/STATE.md e la riga in INDEX.md. Non per i progetti di lavoro.']),
       rigaNome, rigaRepo, rigaStack, h('label', '', ['Priorità', priorita]),
+      conHarness ? h('label', '', ['Harness (se indichi un repo)', harness]) : null,
       h('div', 'riga-azioni', [crea, bottone('Annulla', '', () => d.close())]),
     ]);
     form.addEventListener('submit', async e => {
       e.preventDefault();
       if (!form.reportValidity()) return;
+      if (conHarness && repo.value.trim() && !harness.value) { harness.focus(); return toast(CAMPO_NON_VALIDO.harness); }
       crea.disabled = true;
       try {
-        const r = await invia('/api/mappa/progetto', { nome: nome.value.trim(), repo: repo.value.trim(), stack: stack.value.trim(), priorita: priorita.value });
+        const r = await invia('/api/mappa/progetto', { nome: nome.value.trim(), repo: repo.value.trim(), stack: stack.value.trim(), priorita: priorita.value, harness: harness.value || null });
         if (r.stato === 400) { crea.disabled = false; return toast(CAMPO_NON_VALIDO[r.json && r.json.errore] || 'Dati non validi.'); }   // il dialogo resta aperto: si corregge il campo
         d.close();
         if (!r.ok) return errore(r);

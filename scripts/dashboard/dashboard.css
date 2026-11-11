@@ -541,6 +541,12 @@ td .pillola + button, td .pillola + p { margin-top: 8px; display: flex; }
 .mappa-lista { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; list-style: none; margin: 0; padding: 0; }
 .nodo { cursor: pointer; transition: opacity .25s; outline: none; }
 .nodo .disco { fill: var(--surface); stroke: var(--border); stroke-width: 1; }
+/* harness per agenti: contorno tratteggiato finché il progetto non ha una decisione */
+.nodo.harness-da-decidere .disco { stroke: var(--muted); stroke-dasharray: 4 3; }
+.harness { margin-bottom: var(--gap); }
+.harness .sub { margin: 0 0 6px; }
+.harness-titolo { margin-top: calc(var(--gap) * 1.5); }
+.harness-elenco { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 12px; }
 .nodo .arco { fill: none; stroke-width: 4; }
 .nodo .nome { font-size: calc(13px / var(--k, 1)); font-weight: 500; fill: var(--text); text-anchor: middle; }
 .nodo .num { font-size: calc(20px / var(--k, 1)); fill: var(--text); text-anchor: middle; }

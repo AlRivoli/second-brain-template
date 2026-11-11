@@ -857,6 +857,160 @@ class RotteMappaTest(unittest.TestCase):
             self.assertEqual(self.post("/api/mappa/avvia", {"data": None, "testo": "#alfa uno"}), 200)
             self.assertEqual(self.post("/api/mappa/avvia", {"data": None, "testo": "#alfa uno"}), 409)
 
+    def test_harness_403_400_404_409_200(self):
+        con_harness(self.v)
+        self.assertEqual(self.post("/api/mappa/harness", {"nome": "alfa", "decisione": "adeguare"}, azione=False), 403)
+        for corpo in ({"nome": "alfa", "decisione": "sì"}, {"nome": "alfa"}, {"decisione": "adeguare"}, {"nome": 3, "decisione": "adeguare"}):
+            self.assertEqual(self.post_json("/api/mappa/harness", corpo), (400, {"errore": "harness"}), corpo)
+        self.assertEqual(self.post("/api/mappa/harness", {"nome": "manca", "decisione": "adeguare"}), 404)
+        self.assertEqual(self.post_json("/api/mappa/harness", {"nome": "beta", "decisione": "adeguare"}), (409, {"errore": "senza-repo"}))
+        self.assertNotIn("Harness", (self.v / "projects" / "alfa" / "STATE.md").read_text(encoding="utf-8"))
+        stato, corpo = self.post_json("/api/mappa/harness", {"nome": "alfa", "decisione": "non adeguare"})
+        self.assertEqual((stato, corpo["decisione"]), (200, "non adeguare"))
+        self.assertIn("- **Harness:** non adeguare questo progetto (", (self.v / "projects" / "alfa" / "STATE.md").read_text(encoding="utf-8"))
+
+    def test_harness_con_il_modulo_spento_409(self):
+        self.assertEqual(self.post_json("/api/mappa/harness", {"nome": "alfa", "decisione": "adeguare"}), (409, {"errore": "spento"}))
+
+
+def con_harness(v, **valori):
+    """Accende il modulo dell'harness nel config.json del vault finto."""
+    (v / "config.json").write_text(json.dumps({"moduli": {"harness": dict({"attivo": True}, **valori)}}), encoding="utf-8")
+
+
+RIEPILOGO_HARNESS = {"schema": 1, "date": "2026-11-09", "commit": "abc1234", "pass": 44, "fail": 2, "na": 0, "fail_alta": 0}
+
+
+class HarnessTest(unittest.TestCase):
+    """La decisione sull'harness di un progetto, dalla mappa: la riga nello STATE, lo stato letto dal repo, chi resta da decidere."""
+
+    def setUp(self):
+        self.v = vault_con_template()
+        con_harness(self.v)
+        self.repo = self.v / "repo-alfa"
+        self.stato = self.v / "projects" / "alfa" / "STATE.md"
+        self.stato.write_text("# alfa\n- **Repo:** %s\n- **Aggiornato:** 2026-11-01\n## Obiettivo attuale\nx\n" % self.repo, encoding="utf-8")
+        self.indice = self.v / "projects" / "INDEX.md"
+
+    def mappa(self):
+        return server.mappa(ADESSO, piano_file=self.v / "docs" / "piano.md", vault=self.v)
+
+    def nodo(self, nome="alfa"):
+        return next(n for n in self.mappa()["nodi"] if n["nome"] == nome)
+
+    def test_la_mappa_porta_lo_stato_e_chi_resta_da_decidere(self):
+        m = self.mappa()
+        self.assertEqual(m["harness"], {"attivo": True, "daDecidere": ["alfa"]})
+        self.assertEqual(self.nodo("alfa")["harness"], {"stato": "da decidere", "decisione": "da decidere", "data": None, "report": None})
+        self.assertEqual(self.nodo("beta")["harness"]["stato"], "senza repo")  # senza repo non c'è niente da decidere
+
+    def test_senza_il_modulo_la_mappa_non_parla_di_harness_e_non_si_scrive(self):
+        (self.v / "config.json").unlink()
+        m = self.mappa()
+        self.assertNotIn("harness", m)
+        self.assertNotIn("harness", self.nodo("alfa"))
+        with self.assertRaisesRegex(RuntimeError, "^spento$"):
+            server.imposta_harness("alfa", "adeguare", vault=self.v, oggi="2026-11-11")
+        self.assertNotIn("Harness", self.stato.read_text(encoding="utf-8"))
+
+    def test_adeguare_scrive_la_riga_la_data_e_la_riga_dell_indice(self):
+        esito = server.imposta_harness("alfa", "adeguare", vault=self.v, oggi="2026-11-11")
+        self.assertEqual(esito, {"ok": True, "decisione": "adeguare", "comando": "/ai-native-harness:audit"})
+        self.assertEqual(self.stato.read_text(encoding="utf-8"),
+                         "# alfa\n- **Repo:** %s\n- **Harness:** adeguare (2026-11-11)\n- **Aggiornato:** 2026-11-11\n## Obiettivo attuale\nx\n" % self.repo)
+        self.assertIn("| [[projects/alfa/STATE\\|alfa]] | Stack | Stato | alta | 2026-11-11 |\n", self.indice.read_text(encoding="utf-8"))
+        self.assertIn("| [[projects/beta/STATE\\|beta]] | Stack | Stato | da definire | 2026-11-09 |\n", self.indice.read_text(encoding="utf-8"))
+        self.assertEqual(self.nodo()["harness"]["stato"], "da valutare")
+        self.assertEqual(self.mappa()["harness"]["daDecidere"], [])
+
+    def test_con_il_riepilogo_nel_repo_la_mappa_porta_i_numeri(self):
+        (self.repo / ".claude").mkdir()
+        (self.repo / ".claude" / "harness-status.json").write_text(json.dumps(RIEPILOGO_HARNESS), encoding="utf-8")
+        server.imposta_harness("alfa", "adeguare", vault=self.v, oggi="2026-11-09")
+        self.assertEqual(self.nodo()["harness"], {"stato": "conforme", "decisione": "adeguare", "data": "2026-11-09",
+                                                  "report": {"data": "2026-11-09", "pass": 44, "fail": 2, "na": 0, "fail_alta": 0}})
+
+    def test_il_rifiuto_e_esplicito_e_si_puo_cambiare_idea(self):
+        esito = server.imposta_harness("alfa", "non adeguare", vault=self.v, oggi="2026-11-11")
+        self.assertEqual((esito["decisione"], esito["comando"]), ("non adeguare", None))
+        self.assertIn("- **Harness:** non adeguare questo progetto (2026-11-11)\n", self.stato.read_text(encoding="utf-8"))
+        self.assertEqual(self.nodo()["harness"]["stato"], "escluso")
+        self.assertEqual(self.mappa()["harness"]["daDecidere"], [])
+        server.imposta_harness("alfa", "da decidere", vault=self.v, oggi="2026-11-12")
+        testo = self.stato.read_text(encoding="utf-8")
+        self.assertEqual(testo.count("**Harness:**"), 1, "la riga si sostituisce, non si aggiunge")
+        self.assertIn("- **Harness:** da decidere\n", testo)
+        self.assertEqual(self.mappa()["harness"]["daDecidere"], ["alfa"])
+
+    def test_dati_non_validi_non_scrivono_nulla(self):
+        prima = (self.stato.read_bytes(), self.indice.read_bytes())
+        for decisione in ("sì", "no", "", None, 3, "non adeguare questo progetto", "ADEGUARE"):
+            with self.assertRaisesRegex(ValueError, "^harness$"):
+                server.imposta_harness("alfa", decisione, vault=self.v, oggi="2026-11-11")
+        with self.assertRaisesRegex(ValueError, "^harness$"):
+            server.imposta_harness(None, "adeguare", vault=self.v)
+        with self.assertRaises(LookupError):
+            server.imposta_harness("manca", "adeguare", vault=self.v)
+        with self.assertRaisesRegex(RuntimeError, "^senza-repo$"):
+            server.imposta_harness("beta", "adeguare", vault=self.v)
+        for riservato in ("lavoro", "_private"):
+            with self.assertRaisesRegex(ValueError, "^lavoro$"):
+                server.imposta_harness(riservato, "adeguare", vault=self.v)
+        self.assertEqual((self.stato.read_bytes(), self.indice.read_bytes()), prima)
+
+    def test_uno_state_gia_pieno_non_si_allunga(self):
+        # scripts/verify ammette 20 righe non vuote: la riga in più lo farebbe fallire
+        pieno = "# alfa\n- **Repo:** %s\n- **Aggiornato:** 2026-11-01\n" % self.repo + "".join("riga %d\n" % i for i in range(17))
+        self.stato.write_text(pieno, encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "^righe$"):
+            server.imposta_harness("alfa", "adeguare", vault=self.v, oggi="2026-11-11")
+        self.assertEqual(self.stato.read_text(encoding="utf-8"), pieno)
+
+    def test_gli_a_capo_del_file_restano(self):
+        self.stato.write_bytes(("# alfa\r\n- **Repo:** %s\r\n- **Aggiornato:** 2026-11-01\r\n" % self.repo).encode("utf-8"))
+        server.imposta_harness("alfa", "adeguare", vault=self.v, oggi="2026-11-11")
+        dati = self.stato.read_bytes()
+        self.assertIn(b"- **Harness:** adeguare (2026-11-11)\r\n", dati)
+        self.assertNotIn(b"\n", dati.replace(b"\r\n", b""))
+
+    def test_se_l_indice_non_si_scrive_lo_state_torna_come_prima(self):
+        prima = self.stato.read_bytes()
+        vero = server._scrivi_atomico
+
+        def rotto(file, righe):
+            if file.name == "INDEX.md":
+                raise OSError("disco pieno")
+            return vero(file, righe)
+
+        with mock.patch.object(server, "_scrivi_atomico", rotto):
+            with self.assertRaises(OSError):
+                server.imposta_harness("alfa", "adeguare", vault=self.v, oggi="2026-11-11")
+        self.assertEqual(self.stato.read_bytes(), prima)
+
+    def test_un_progetto_nuovo_con_un_repo_chiede_la_decisione(self):
+        repo = self.v / "repo-gamma"
+        (repo / ".git").mkdir(parents=True)
+        for scelta in (None, "", "sì", "non adeguare questo progetto"):
+            with self.assertRaisesRegex(ValueError, "^harness$"):
+                server.nuovo_progetto("gamma", str(repo), harness=scelta, vault=self.v, oggi="2026-11-10")
+            self.assertFalse((self.v / "projects" / "gamma").exists(), scelta)
+        server.nuovo_progetto("gamma", str(repo), harness="non adeguare", vault=self.v, oggi="2026-11-10")
+        stato = (self.v / "projects" / "gamma" / "STATE.md").read_text(encoding="utf-8")
+        self.assertTrue(stato.startswith("# gamma\n- **Repo:** %s\n- **Harness:** non adeguare questo progetto (2026-11-10)\n- **Aggiornato:** 2026-11-10\n" % repo.resolve()), stato)
+        server.nuovo_progetto("delta", str(repo), harness="da decidere", vault=self.v, oggi="2026-11-10")
+        self.assertIn("- **Harness:** da decidere\n", (self.v / "projects" / "delta" / "STATE.md").read_text(encoding="utf-8"))
+
+    def test_un_progetto_nuovo_senza_repo_non_ha_la_riga(self):
+        server.nuovo_progetto("gamma", "", harness="adeguare", vault=self.v, oggi="2026-11-10")
+        self.assertNotIn("Harness", (self.v / "projects" / "gamma" / "STATE.md").read_text(encoding="utf-8"))
+
+    def test_senza_il_modulo_un_progetto_nuovo_non_chiede_nulla(self):
+        (self.v / "config.json").unlink()
+        repo = self.v / "repo-gamma"
+        (repo / ".git").mkdir(parents=True)
+        server.nuovo_progetto("gamma", str(repo), vault=self.v, oggi="2026-11-10")
+        self.assertNotIn("Harness", (self.v / "projects" / "gamma" / "STATE.md").read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

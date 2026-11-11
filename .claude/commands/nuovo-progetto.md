@@ -12,6 +12,11 @@ Gli argomenti sono il nome (prima parola) e, facoltativo, il percorso di un repo
 2. **Esistenza.** Se `projects/<nome>/` esiste già, fermati e dillo. Non toccare né lo `STATE.md` né la riga in `projects/INDEX.md`.
 3. **STATE.** Crea `projects/<nome>/STATE.md` (la cartella nasce con il file) a partire da `templates/STATE.md`: sostituisci `{{title}}` con il nome del progetto e `{{date:YYYY-MM-DD}}` con la data di oggi. Se c'è il percorso, scrivilo assoluto nel campo `Repo:` (la riga `- **Repo:** <percorso>`); senza percorso lascia il segnaposto. Un progetto fatto di più repo (per esempio backend, app e frontend) ha una riga `- **Repo:**` per ognuno, una sotto l'altra, un percorso assoluto per riga: se l'utente ne nomina altri, controlla ognuno come al punto 1 (repo git, non di lavoro) e aggiungi le sue righe sotto la prima. Lascia vuoti gli altri campi da compilare. Non creare altre sottocartelle: `decisions.md` nasce quando c'è la prima decisione.
 4. **Indice.** Aggiungi in fondo alla tabella di `projects/INDEX.md` una riga costruita da `templates/project-index-row.md`, con la data di oggi.
-5. **Verifica.** Esegui `./scripts/verify` (su Windows `py -3 scripts/verify`, perché lo shebang non vale). Expected: `OK`. Se non passa, correggi solo ciò che hai creato tu.
+5. **Harness.** Solo se il progetto ha un repo e `config.json` ha l'harness acceso (`moduli.harness.attivo` oppure `moduli.work-settings.harness.attivo` a `true`): chiedi all'utente se adeguare il progetto all'harness per agenti. Scrivi la riga subito sotto l'ultima riga `Repo:` dello STATE, secondo la risposta:
+   - «adegua»: `- **Harness:** adeguare (AAAA-MM-GG)`, con la data di oggi. Di' all'utente di lanciare `/ai-native-harness:audit` nel repo del progetto. Non lanciarlo tu da qui: esegue i check di quel repo.
+   - «non adeguare questo progetto», detto per esteso: `- **Harness:** non adeguare questo progetto (AAAA-MM-GG)`, con la data di oggi.
+   - qualunque altra risposta («no», «dopo», nessuna risposta): `- **Harness:** da decidere`. Un silenzio non vale come un rifiuto: la dashboard lo riproporrà.
+   Senza repo, o con l'harness spento, non chiedere e non scrivere la riga.
+6. **Verifica.** Esegui `./scripts/verify` (su Windows `py -3 scripts/verify`, perché lo shebang non vale). Expected: `OK`. Se non passa, correggi solo ciò che hai creato tu.
 
 Non fare commit: lo fa `/chiudi-giornata`.

@@ -69,6 +69,11 @@ def attivo(config):
     return _sezione_harness(config).get("attivo") is True
 
 
+def attivo_in(vault):
+    """Come `attivo`, leggendo il config.json del vault: per chi deve solo sapere se fare la domanda (la dashboard)."""
+    return attivo(_config(Path(vault)))
+
+
 def giorni_validita(config):
     giorni = _sezione_harness(config).get("giorni_validita")
     return giorni if type(giorni) is int and 1 <= giorni <= 3650 else GIORNI_VALIDITA

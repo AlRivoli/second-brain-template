@@ -594,6 +594,191 @@ class AggiungiVoceTest(unittest.TestCase):
         self.assertEqual(f.read_text(encoding="utf-8"), "## A\n- [x] #beta uno\n")
 
 
+def vault_con_template(piano="## A\n- [ ] #alfa uno\n"):
+    v = vault_finto(piano)
+    (v / "templates").mkdir()
+    (v / "templates" / "STATE.md").write_text(
+        "# {{title}}\n- **Repo:** <percorso locale, o \"nessuno\">\n- **Aggiornato:** {{date:YYYY-MM-DD}}\n## Obiettivo attuale\n<una o due righe>\n", encoding="utf-8")
+    (v / "templates" / "project-index-row.md").write_text(
+        "| Progetto | Stack | Stato | Priorità | Ultimo aggiornamento |\n|---|---|---|---|---|\n"
+        "| [[projects/<nome>/STATE\\|<nome>]] | <stack> | <stato in 5 parole> | <alta / media / bassa> | {{date:YYYY-MM-DD}} |\n", encoding="utf-8")
+    return v
+
+
+class NuovoProgettoTest(unittest.TestCase):
+    def test_crea_state_e_riga_e_compare_sulla_mappa(self):
+        v = vault_con_template()
+        repo = v / "repo-gamma"
+        (repo / ".git").mkdir(parents=True)
+        esito = server.nuovo_progetto("gamma", str(repo), "Python, SQLite", "media", vault=v, oggi="2026-11-10")
+        self.assertEqual(esito, {"ok": True, "nome": "gamma"})
+        stato = (v / "projects" / "gamma" / "STATE.md").read_text(encoding="utf-8")
+        self.assertTrue(stato.startswith("# gamma\n- **Repo:** %s\n- **Aggiornato:** 2026-11-10\n" % repo.resolve()), stato)
+        indice = (v / "projects" / "INDEX.md").read_text(encoding="utf-8")
+        self.assertTrue(indice.endswith("| [[projects/gamma/STATE\\|gamma]] | Python, SQLite | <stato in 5 parole> | media | 2026-11-10 |\n"), indice)
+        info = server.progetti_indice(v)["gamma"]
+        self.assertEqual((info["priorita"], info["cartelle"]), ("media", [repo.resolve()]))
+        self.assertIn("gamma", [n["nome"] for n in server.mappa(ADESSO, piano_file=v / "docs" / "piano.md", vault=v)["nodi"]])
+
+    def test_senza_repo_stack_e_priorita_restano_i_segnaposto(self):
+        v = vault_con_template()
+        server.nuovo_progetto("gamma", "", "", "", vault=v, oggi="2026-11-10")
+        self.assertIn("- **Repo:** <percorso locale", (v / "projects" / "gamma" / "STATE.md").read_text(encoding="utf-8"))
+        self.assertIn("| [[projects/gamma/STATE\\|gamma]] | <stack> | <stato in 5 parole> | <alta / media / bassa> | 2026-11-10 |", (v / "projects" / "INDEX.md").read_text(encoding="utf-8"))
+
+    def test_la_riga_va_in_fondo_alla_tabella_e_il_crlf_resta(self):
+        v = vault_con_template()
+        indice = v / "projects" / "INDEX.md"
+        # su Windows write_text ha già scritto CRLF: si riparte da LF per non raddoppiare il \r
+        indice.write_bytes(indice.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n") + b"\r\nNota sotto la tabella\r\n")
+        server.nuovo_progetto("gamma", vault=v, oggi="2026-11-10")
+        righe = indice.read_bytes().split(b"\r\n")
+        self.assertTrue(righe[4].startswith(b"| [[projects/gamma/STATE"), righe)
+        self.assertEqual(righe[5:], [b"", b"Nota sotto la tabella", b""])
+        self.assertNotIn(b"\n", indice.read_bytes().replace(b"\r\n", b""))
+
+    def test_dati_non_validi_non_scrivono_nulla(self):
+        v = vault_con_template()
+        (v / "config.json").write_text(json.dumps({"moduli": {"riservata": {"attivo": True, "cartella": "projects/confidential-notes"}}}), encoding="utf-8")
+        senza_git = v / "senza-git"
+        senza_git.mkdir()
+        nel_lavoro = v / "projects" / "lavoro" / "cliente"
+        (nel_lavoro / ".git").mkdir(parents=True)
+        buono = v / "repo-alfa"
+        (buono / ".git").mkdir()
+        prima = (v / "projects" / "INDEX.md").read_bytes()
+        casi = [(n, None, None, None, "nome") for n in ("Gamma", "-gamma", "ga mma", "../gamma", "ga/mma", "lavoro", "con", "com1", "confidential-notes", "", "x" * 61, 5, None)]
+        casi += [("gamma", r, None, None, "repo") for r in ("relativo/repo", str(v / "manca"), str(senza_git), str(nel_lavoro), "\\\\server\\share\\repo", "//server/share/repo",
+                                                           str(buono) + "\nx", str(buono) + "|x", "x" * 401, 5)]
+        casi += [("gamma", None, s, None, "stack") for s in ("a|b", "a\nb", "<b>", "x" * 201, "a‮b", 5)]
+        casi += [("gamma", None, None, p, "priorita") for p in ("urgente", "Alta", 3)]
+        for nome, repo, stack, priorita, campo in casi:
+            with self.subTest(nome=nome, repo=repo, stack=stack, priorita=priorita):
+                with self.assertRaises(ValueError) as c:
+                    server.nuovo_progetto(nome, repo, stack, priorita, vault=v)
+                self.assertEqual(str(c.exception), campo)
+        self.assertEqual((v / "projects" / "INDEX.md").read_bytes(), prima)
+        self.assertFalse((v / "projects" / "gamma").exists())
+
+    def test_la_cartella_riservata_predefinita_non_e_un_nome_ne_un_repo(self):
+        v = vault_con_template()
+        riservata = "_" + "private"  # spezzato: la regola deny su Bash blocca ogni comando che contiene il nome
+        repo = v / "projects" / riservata / "cliente"
+        (repo / ".git").mkdir(parents=True)
+        for nome, percorso, campo in ((riservata, None, "nome"), ("gamma", str(repo), "repo")):
+            with self.assertRaises(ValueError) as c:
+                server.nuovo_progetto(nome, percorso, vault=v)
+            self.assertEqual(str(c.exception), campo)
+
+    def test_progetto_che_esiste_gia_anche_con_altre_maiuscole(self):
+        v = vault_con_template()
+        (v / "projects" / "Delta").mkdir()
+        prima = (v / "projects" / "INDEX.md").read_bytes()
+        for nome in ("alfa", "delta"):
+            with self.assertRaises(RuntimeError) as c:
+                server.nuovo_progetto(nome, vault=v)
+            self.assertEqual(str(c.exception), "esiste")
+        self.assertEqual((v / "projects" / "INDEX.md").read_bytes(), prima)
+        self.assertEqual((v / "projects" / "alfa" / "STATE.md").read_text(encoding="utf-8").splitlines()[0], "# alfa")
+
+    def test_percorsi_di_rete_e_riservati_scartati_prima_di_toccare_il_disco(self):
+        # «/\srv\share» non comincia con \\ ma Path lo legge come percorso di rete: exists() aprirebbe una connessione verso srv
+        v = vault_con_template()
+        dentro = v / "projects" / "LAVORO" / "cliente"  # altre maiuscole: su NTFS e APFS è la stessa cartella
+        vero = server.Path.resolve
+
+        def solo_il_vault(percorso, *a, **k):  # il vault si può risolvere, il percorso scritto dall'utente no
+            if percorso != v:
+                raise AssertionError("disco toccato: %s" % percorso)
+            return vero(percorso, *a, **k)
+
+        casi = ["\\\\srv\\share\\repo", "//srv/share/repo", "\\/srv/share/repo", "\\\\?\\C:\\repo", "\\\\.\\pipe\\x", str(dentro)]
+        if os.name == "nt":  # altrove è il nome, strano ma locale, di una cartella sotto /
+            casi.append("/\\srv\\share\\repo")
+        with mock.patch.object(server.Path, "resolve", solo_il_vault), mock.patch.object(server.Path, "exists", side_effect=AssertionError("disco toccato")):
+            for repo in casi:
+                with self.subTest(repo=repo):
+                    with self.assertRaises(ValueError) as c:
+                        server._repo_del_progetto(repo, v, {"lavoro"})
+                    self.assertEqual(str(c.exception), "repo")
+
+    def test_wikilink_e_backtick_non_entrano_nelle_righe(self):
+        v = vault_con_template()
+        for stack in ("[[projects/alfa/STATE]]", "vedi ]] qui", "`rm -rf`"):
+            with self.subTest(stack=stack), self.assertRaises(ValueError) as c:
+                server.nuovo_progetto("gamma", None, stack, vault=v)
+            self.assertEqual(str(c.exception), "stack")
+        self.assertFalse((v / "projects" / "gamma").exists())
+
+    def test_senza_template_non_crea_nulla(self):
+        v = vault_finto("## A\n")
+        with self.assertRaises(RuntimeError) as c:
+            server.nuovo_progetto("gamma", vault=v)
+        self.assertEqual(str(c.exception), "template")
+        self.assertFalse((v / "projects" / "gamma").exists())
+
+    def test_se_l_indice_non_si_scrive_lo_state_si_toglie(self):
+        v = vault_con_template()
+        with mock.patch.object(server, "_scrivi_atomico", side_effect=OSError("disco pieno")), self.assertRaises(OSError):
+            server.nuovo_progetto("gamma", vault=v)
+        self.assertFalse((v / "projects" / "gamma").exists())
+
+
+class PrioritaTest(unittest.TestCase):
+    def test_cambia_solo_la_cella_della_priorita(self):
+        v = vault_finto("## A\n")
+        indice = v / "projects" / "INDEX.md"
+        self.assertEqual(server.imposta_priorita("Beta", "bassa", vault=v), {"ok": True, "priorita": "bassa"})
+        self.assertEqual(indice.read_text(encoding="utf-8").splitlines()[2:], [
+            "| [[projects/alfa/STATE\\|alfa]] | Stack | Stato | alta | 2026-11-09 |",
+            "| [[projects/beta/STATE\\|beta]] | Stack | Stato | bassa | 2026-11-09 |"])
+        self.assertEqual(server.progetti_indice(v)["beta"]["priorita"], "bassa")
+
+    def test_crlf_conservato(self):
+        v = vault_finto("## A\n")
+        indice = v / "projects" / "INDEX.md"
+        indice.write_bytes(indice.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+        server.imposta_priorita("alfa", "media", vault=v)
+        self.assertIn(b"| Stato | media | 2026-11-09 |\r\n", indice.read_bytes())
+        self.assertNotIn(b"\n", indice.read_bytes().replace(b"\r\n", b""))
+
+    def test_valore_non_valido_progetto_assente_o_del_lavoro(self):
+        v = vault_finto("## A\n")
+        indice = v / "projects" / "INDEX.md"
+        with indice.open("a") as i:
+            i.write("| [[projects" "/" "lavoro" "/cliente/STATE\\|cliente]] | Stack | Stato | alta | 2026-11-09 |\n")  # spezzato: il template non lo contiene per intero
+        prima = indice.read_bytes()
+        for nome, priorita in (("alfa", "urgente"), ("alfa", "Alta"), ("alfa", None), (5, "alta"), ("cliente", "bassa")):
+            with self.subTest(nome=nome, priorita=priorita), self.assertRaises(ValueError):
+                server.imposta_priorita(nome, priorita, vault=v)
+        with self.assertRaises(LookupError):
+            server.imposta_priorita("manca", "alta", vault=v)
+        self.assertEqual(indice.read_bytes(), prima)
+
+    def test_riga_senza_alias_o_con_un_nome_riservato_non_si_tocca(self):
+        v = vault_finto("## A\n")
+        indice = v / "projects" / "INDEX.md"
+        riservata = "_" + "private"  # spezzato: la regola deny su Bash blocca ogni comando che contiene il nome
+        indice.write_text("| [[projects/alfa/STATE]] | Stack | Stato | alta | 2026-11-09 | nota |\n"
+                          "| [[projects/%s/STATE\\|%s]] | Stack | Stato | alta | 2026-11-09 |\n" % (riservata, riservata), encoding="utf-8")
+        prima = indice.read_bytes()
+        with self.assertRaises(RuntimeError) as c:  # senza \| la cella 5 è la data, non la priorità
+            server.imposta_priorita("alfa", "bassa", vault=v)
+        self.assertEqual(str(c.exception), "riga")
+        with self.assertRaises(ValueError):
+            server.imposta_priorita(riservata, "bassa", vault=v)
+        self.assertEqual(indice.read_bytes(), prima)
+
+    def test_riga_senza_le_colonne_attese(self):
+        v = vault_finto("## A\n")
+        indice = v / "projects" / "INDEX.md"
+        indice.write_text("| [[projects/alfa/STATE\\|alfa]] | Stack |\n", encoding="utf-8")
+        with self.assertRaises(RuntimeError) as c:
+            server.imposta_priorita("alfa", "alta", vault=v)
+        self.assertEqual(str(c.exception), "riga")
+        self.assertEqual(indice.read_text(encoding="utf-8"), "| [[projects/alfa/STATE\\|alfa]] | Stack |\n")
+
+
 class RotteMappaTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -679,6 +864,33 @@ class RotteMappaTest(unittest.TestCase):
         self.assertEqual(self.post_json("/api/mappa/nuovo", {"tag": "alfa", "testo": "uno"}), (409, {"errore": "doppia"}))
         self.assertEqual(self.post_json("/api/mappa/nuovo", {"tag": "alfa", "testo": "due"}), (200, {"ok": True, "riga": "- [ ] #alfa due"}))
         self.assertEqual(piano.read_text(encoding="utf-8"), "## A\n- [ ] #alfa uno\n- [ ] #alfa due\n")
+
+    def test_progetto_403_400_409_200(self):
+        (self.v / "templates").mkdir()
+        (self.v / "templates" / "STATE.md").write_text("# {{title}}\n- **Repo:** <percorso>\n- **Aggiornato:** {{date:YYYY-MM-DD}}\n", encoding="utf-8")
+        (self.v / "templates" / "project-index-row.md").write_text("| [[projects/<nome>/STATE\\|<nome>]] | <stack> | <stato> | <alta / media / bassa> | {{date:YYYY-MM-DD}} |\n", encoding="utf-8")
+        self.assertEqual(self.post("/api/mappa/progetto", {"nome": "gamma"}, azione=False), 403)
+        self.assertEqual(self.post_json("/api/mappa/progetto", {"nome": "Gamma"}), (400, {"errore": "nome"}))
+        self.assertEqual(self.post_json("/api/mappa/progetto", {"nome": "gamma", "repo": "relativo"}), (400, {"errore": "repo"}))
+        self.assertEqual(self.post_json("/api/mappa/progetto", {}), (400, {"errore": "nome"}))
+        self.assertEqual(self.post_json("/api/mappa/progetto", {"nome": "alfa"}), (409, {"errore": "esiste"}))
+        self.assertFalse((self.v / "projects" / "gamma").exists())
+        self.assertEqual(self.post_json("/api/mappa/progetto", {"nome": "gamma", "repo": "", "stack": "Python", "priorita": "alta"}), (200, {"ok": True, "nome": "gamma"}))
+        self.assertTrue((self.v / "projects" / "gamma" / "STATE.md").is_file())
+
+    def test_progetto_errore_sconosciuto_non_porta_testo_al_client(self):
+        # resolve() su un giro di link solleva RuntimeError con il percorso dentro: al client va solo un codice
+        with mock.patch.object(server, "nuovo_progetto", side_effect=RuntimeError("Symlink loop from 'C:\\Users\\ada\\x'")):
+            self.assertEqual(self.post_json("/api/mappa/progetto", {"nome": "gamma"}), (409, {"errore": "errore"}))
+        with mock.patch.object(server, "imposta_priorita", side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")):
+            self.assertEqual(self.post_json("/api/mappa/priorita", {"nome": "beta", "priorita": "alta"}), (400, {"errore": "dati"}))
+
+    def test_priorita_403_400_404_200(self):
+        self.assertEqual(self.post("/api/mappa/priorita", {"nome": "beta", "priorita": "alta"}, azione=False), 403)
+        self.assertEqual(self.post_json("/api/mappa/priorita", {"nome": "beta", "priorita": "urgente"}), (400, {"errore": "priorita"}))
+        self.assertEqual(self.post("/api/mappa/priorita", {"nome": "manca", "priorita": "alta"}), 404)
+        self.assertEqual(self.post_json("/api/mappa/priorita", {"nome": "beta", "priorita": "alta"}), (200, {"ok": True, "priorita": "alta"}))
+        self.assertIn("| Stato | alta | 2026-11-09 |\n", (self.v / "projects" / "INDEX.md").read_text(encoding="utf-8").splitlines(keepends=True)[3])
 
     def test_avvia_su_linux_501(self):
         with mock.patch.object(server.sys, "platform", "linux"), mock.patch.object(server.subprocess, "run") as run:

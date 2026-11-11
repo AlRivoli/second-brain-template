@@ -201,7 +201,7 @@ Con [Paseo](https://paseo.sh), un daemon open source con app iOS e Android, puoi
 
 ## Privacy
 
-Claude Code invia al modello i file che legge. Metti le note riservate nella cartella creata dal modulo `riservata` (esclusa da git e bloccata da regole `deny`) e leggi [ADR-002](docs/adr/ADR-002-confidential-notes.md) per i limiti di quel blocco: le regole non fermano uno script che lanci tu. Il tuo nome, le note e i file di memoria restano nella tua copia: `setup.py` li scrive dai file `*.example.md` e git li ignora. Gli indirizzi dei calendari e le password stanno fuori dal vault. La dashboard ascolta solo su `127.0.0.1`.
+Claude Code invia al modello i file che legge. Metti le note riservate nella cartella creata dal modulo `riservata` (esclusa da git e bloccata da regole `deny`) e leggi [ADR-002](docs/adr/ADR-002-confidential-notes.md) per i limiti di quel blocco: le regole non fermano uno script che lanci tu. Il tuo nome, le note e i file di memoria restano nella tua copia: `setup.py` li scrive dai file `*.example.md` e git li ignora. Gli indirizzi dei calendari e le password stanno fuori dal vault. La dashboard ascolta solo su `127.0.0.1`. Il plugin Sync di Obsidian è spento in `.obsidian/`: accenderlo sincronizzerebbe anche la cartella riservata, che git ignora.
 
 ## Se qualcosa non va
 

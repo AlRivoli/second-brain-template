@@ -166,7 +166,7 @@ Il testo di una novità non è fidato: ogni titolo passa da `content-guard` (sch
 
 - `python3 scripts/verify` controlla le regole del vault: STATE corti, `INDEX` coerente, link validi, che questo README citi ogni job e ogni comando, e il registro `scaffold/` se ce l'hai. Lancialo dopo ogni modifica a uno STATE o all'indice; `/chiudi-giornata` lo lancia per te.
 - `python3 doctor.py` controlla Python, git, Claude Code, `verify` e ciò che le tue scelte richiedono (Ollama acceso, ogni modello locale scaricato, RAM sufficiente, n8n se l'hai scelto). `--ci` controlla solo il necessario.
-- Controllo dei segreti: `scripts/hooks/pre-commit` lancia gitleaks su ciò che stai per committare e blocca il commit se trova un segreto. Si attiva una volta per clone con `git config core.hooksPath scripts/hooks`; serve [gitleaks](https://github.com/gitleaks/gitleaks) installato (`doctor.py` mostra come).
+- Controllo dei segreti: `scripts/hooks/pre-commit` lancia gitleaks su ciò che stai per committare e blocca il commit se trova un segreto. Si attiva una volta per clone con `git config core.hooksPath scripts/hooks`; serve [gitleaks](https://github.com/gitleaks/gitleaks) installato (`doctor.py` mostra come). `doctor.py` dice anche quando l'hook non è attivo in questo clone: un clone o un worktree nuovo committa senza questi controlli finché non lanci quel comando.
 
 ## Traccia i repo che hai già
 

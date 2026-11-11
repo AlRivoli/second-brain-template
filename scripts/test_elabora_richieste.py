@@ -56,6 +56,22 @@ class ElaboraTest(unittest.TestCase):
             self.assertIsNone(self.esegui(f, "Invalid API key · Please run /login"))
             self.assertEqual(json.loads(f.read_text())["richieste"][0]["stato"], "nuova")
 
+    def test_le_cartelle_riservate_non_si_elaborano(self):
+        # ADR-002: una richiesta nella cartella riservata non parte verso un modello in cloud, nemmeno se la cartella
+        # ha un nome scelto al setup o è scritta con altre maiuscole (NTFS e APFS non le distinguono)
+        with tempfile.TemporaryDirectory() as d:
+            vault = Path(d)
+            (vault / "config.json").write_text(json.dumps({"moduli": {"riservata": {"attivo": True, "cartella": "projects/confidential-notes"}}}))
+            for nome in ("demo", "lavoro", "_Private", "confidential-notes"):
+                cartella = vault / "projects" / nome
+                cartella.mkdir(parents=True)
+                e.rq.aggiungi(cartella / "post-linkedin-richieste.json", nome, "linkedin", {"formato": "immagine", "tema": "tema", "riferimento": None}, set(), ADESSO)
+            self.assertEqual([f.parent.name for f in e.da_elaborare(vault)], ["demo"])
+
+    def test_senza_config_valgono_le_cartelle_fisse(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(e.cartelle_escluse(Path(d)), {"lavoro", "_private"})
+
 
 if __name__ == "__main__":
     unittest.main()

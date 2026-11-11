@@ -70,6 +70,11 @@ class HtmlDashboard(unittest.TestCase):
         self.assertIn("textContent", js)                                # il testo dell'utente entra solo come testo
         self.assertNotIn("innerHTML", js)
 
+    def test_nuovo_progetto_e_priorita_dalla_mappa(self):
+        js = (D / "mappa.js").read_text(encoding="utf-8")
+        for pezzo in ("mappa-progetto", "/api/mappa/progetto", "/api/mappa/priorita", "Nuovo progetto", "Priorità del progetto", "Non per i progetti di lavoro", "n.tipo === 'progetto' && n.haCartella"):
+            self.assertIn(pezzo, js, pezzo)
+
     def test_i_numeri_dei_nodi_si_spiegano_e_le_bozze_sono_in_sola_lettura(self):
         js = (D / "mappa.js").read_text(encoding="utf-8")
         css = (D / "dashboard.css").read_text(encoding="utf-8")

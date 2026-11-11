@@ -64,8 +64,22 @@ def chiudi(vault=VAULT, log=LOGS / "second-brain-chiudi.log", lock=LOGS / "secon
             scrivi("niente da aggiornare: nessun commit nuovo nei repo e vault pulito")
             return 0
 
+        # I blocchi di oggi dell'hook delle regole (ADR-013), per la rilettura degli errori: nomi di regole e conteggi, mai
+        # comandi. Qui il modello non ha Bash e non potrebbe contarli. Se il conteggio fallisce la chiusura va avanti senza:
+        # la rilettura non deve fermare gli STATE.
+        blocchi = ""
+        try:
+            r = run([sys.executable, "-I", "scripts/blocchi-regole.py", "--giorni", "1"], cwd=vault, stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL, text=True, encoding="utf-8")
+            if r.returncode == 0:
+                blocchi = (r.stdout or "").strip()
+        except OSError:
+            pass
+
         # I git di lettura e il commit sono già permessi da .claude/settings.json; qui non apro altro.
         prompt = f"/chiudi-giornata\nAttività dei repo dall'ultimo STATE:\n{attivita or 'nessuna'}"
+        if blocchi:
+            prompt += f"\nBlocchi delle regole di oggi (nome della regola: quante volte):\n{blocchi}"
         r = run(["claude", "--permission-mode", "dontAsk", "--allowedTools", "Read", "Write", "Edit", "Glob", "Grep", "-p", prompt],
                 cwd=vault, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8")
         with open(log, "a", encoding="utf-8") as f:

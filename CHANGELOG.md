@@ -5,6 +5,7 @@ All notable changes to this project are written here. The format follows [Keep a
 ## [Unreleased]
 
 ### Added
+- A project can record whether it is brought in line with the agent harness: an optional `- **Harness:**` line in its `STATE.md`, with one of `da decidere`, `adeguare (date)` or `non adeguare questo progetto (date)`. The refusal is explicit and dated; a missing line means the decision is open, so existing vaults are unaffected. `scripts/verify` fails on any other value. `scripts/harness-progetti.py` lists the state of every project (`senza repo`, `da decidere`, `escluso`, `da valutare`, `da rifare`, `da adeguare`, `conforme`) from that line and from `.claude/harness-status.json` in the project repo, read as untrusted data: four numbers and a date, nothing else. It never writes and skips the confidential folder.
 - Neutral `ADR-001` (vault boundaries) and `ADR-005` (radar filter) in `docs/adr/`, so every ADR the commands and scripts cite exists; `scripts/verify` now fails when a cited `ADR-NNN` has no file.
 - `.claude/rules/pwa.md`: the PWA and Android manifest rules, loaded only when you touch a manifest (they used to sit in `CLAUDE.md`).
 - Claude Code hooks in `.claude/hooks/`: `regole.py` with its single rule list `regole.json` (ADR-012) parses each Bash command like the shell and refuses or asks (force-push and history rewrites refused; push, PRs, deploys, `rm` ask), installed for every repo by `scripts/installa-regole.py` (offered by `setup.py`); `stop_verify.py`; and `code-reviewer`, a read-only adversarial reviewer subagent.

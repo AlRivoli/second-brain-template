@@ -409,5 +409,42 @@ class HarnessTest(unittest.TestCase):
         self.assertIn('più di una riga Harness', out)
 
 
+class ErroriRicorrentiTest(unittest.TestCase):
+    """La sezione «Recurring errors» di CLAUDE.md è il registro degli errori corretti (ADR-013): una riga senza data non si può rileggere."""
+
+    def check(self, *righe, titolo='## Recurring errors'):
+        testo = '# Vault\n\n## Writing rules\n\n- una regola senza data, in un\'altra sezione\n\n%s\n\nDated lines.\n\n%s\n' % (titolo, '\n'.join(righe))
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), extra={'CLAUDE.md': testo})
+            return run_verify(tmp)
+
+    def test_sezione_vuota_o_con_righe_datate_passa(self):
+        self.assertEqual(self.check()[0], 0)
+        code, out = self.check('- 2026-11-11 · push su main senza chiedere · causa: regola solo in prosa · layer: nessuno',
+                               '- 2026-11-12 · STATE oltre le 20 righe · causa: nessun controllo · layer: check verify')
+        self.assertEqual(code, 0, out)
+
+    def test_una_riga_senza_data_o_con_una_data_che_non_esiste_si_segnala_con_il_numero_di_riga(self):
+        code, out = self.check('- 2026-11-11 · va bene · causa: x · layer: nessuno', '- ieri ho sbagliato un push', '- 2026-02-31 · data finta')
+        self.assertEqual(code, 1, out)
+        self.assertIn('CLAUDE.md:12: riga di "Recurring errors" senza data', out)
+        self.assertIn('CLAUDE.md:13: riga di "Recurring errors" senza data', out)
+        self.assertNotIn('CLAUDE.md:11', out)
+        self.assertNotIn('ieri ho sbagliato', out)  # il testo della riga non si ripete
+
+    def test_le_altre_sezioni_non_si_toccano(self):
+        code, out = self.check()
+        self.assertEqual(code, 0, out)  # la regola senza data in «Writing rules» non è un errore ricorrente
+
+    def test_vale_anche_per_il_titolo_in_italiano(self):
+        code, out = self.check('- senza data', titolo='## Errori ricorrenti')
+        self.assertEqual(code, 1, out)
+
+    def test_senza_claude_md_non_c_e_niente_da_controllare(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp))
+            self.assertEqual(run_verify(tmp)[0], 0)
+
+
 if __name__ == '__main__':
     unittest.main()

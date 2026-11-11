@@ -6,12 +6,17 @@ Non confronta il testo del comando: lo scompone come la shell (segmenti su ; && 
 Uscite: nega = exit 2 con il motivo su stderr; chiedi = JSON "ask" su stdout; niente = exit 0 muto (decidono i settings).
 Non risponde mai "allow". Qualsiasi errore interno (JSON rotto, regole mancanti, apici non chiusi) diventa "chiedi".
 Limiti noti: alias di git, script su file (bash x.sh, python -c), tool MCP.
+
+Ogni nega e ogni chiedi lascia una riga nel registro dei blocchi (ADR-013): data, nome della regola, azione. Il nome viene
+da regole.json, mai dal comando: nel registro non entrano comandi, argomenti o percorsi. Se il registro non si può
+scrivere la decisione resta quella.
 """
 import json
 import os
 import re
 import shlex
 import sys
+from datetime import date
 from pathlib import Path
 
 PROFONDITA_MAX = 5
@@ -36,8 +41,13 @@ CON_VALORE = {  # opzioni che si mangiano l'argomento successivo
 }
 GIT_CON_VALORE = {"-C", "-c", "--git-dir", "--work-tree", "--exec-path", "--namespace", "--config-env", "--super-prefix"}
 HEREDOC = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1([^\n]*)\n.*?^[ \t]*\2[ \t]*$", re.S | re.M)
-CHIAVI = {"azione", "motivo", "comando", "percorsi", "solo_vault", "se_opzione", "se_argomento", "se_config", "tranne_opzione", "tranne_argomento"}
+CHIAVI = {"id", "azione", "motivo", "comando", "percorsi", "solo_vault", "se_opzione", "se_argomento", "se_config", "tranne_opzione",
+          "tranne_argomento", "e_argomento", "e_almeno_argomenti"}
 FORZA = {"": 0, "chiedi": 1, "nega": 2}
+NOME = re.compile(r"[a-z0-9][a-z0-9-]*")
+NESSUNO = ("", "", "")  # (azione, motivo, nome della regola)
+REGISTRO = "second-brain-regole.log"  # con questo nome lo ruota scripts/ruota-log.py, come gli altri log
+ERRORE_INTERNO = "errore-interno"
 
 
 def carica_regole(percorso):
@@ -50,10 +60,43 @@ def carica_regole(percorso):
             raise ValueError("regola non valida: %r" % (r,))
         if ("comando" in r) == ("percorsi" in r):
             raise ValueError("una regola ha 'comando' oppure 'percorsi': %r" % (r,))
-        for chiave in ("se_argomento", "se_config", "tranne_argomento"):
+        if "id" in r and not (isinstance(r["id"], str) and NOME.fullmatch(r["id"])):
+            raise ValueError("id non valido (lettere minuscole, cifre e trattini): %r" % (r,))
+        if "e_almeno_argomenti" in r and not (type(r["e_almeno_argomenti"]) is int and r["e_almeno_argomenti"] >= 1):
+            raise ValueError("e_almeno_argomenti vuole un numero intero da 1 in su: %r" % (r,))
+        for chiave in ("se_argomento", "se_config", "tranne_argomento", "e_argomento"):
             if chiave in r:
                 re.compile(r[chiave])
     return regole
+
+
+def nome_di(regola, posizione):
+    """Il nome con cui una regola finisce nel registro. Un regole.json scritto prima dei nomi resta valido: prende il numero di riga."""
+    return regola.get("id") or "regola-%d" % (posizione + 1)
+
+
+def cartella_log(home, ambiente=os.environ, piattaforma=None):
+    """La cartella dei log del sistema: la stessa regola di scripts/percorsi.py, ripetuta qui perché questo file viene copiato
+    da solo in ~/.claude/hooks e non può importarlo. scripts/test_regole.py controlla che le due restino uguali."""
+    home = Path(home)
+    piattaforma = piattaforma or sys.platform
+    if piattaforma == "darwin":
+        return home / "Library" / "Logs"
+    if piattaforma == "win32":
+        return Path(ambiente.get("LOCALAPPDATA") or home / "AppData" / "Local") / "second-brain" / "logs"
+    return Path(ambiente.get("XDG_STATE_HOME") or home / ".local" / "state") / "second-brain"
+
+
+def registra(azione, regola, home):
+    """Una riga per blocco: data, nome della regola, azione. Serve a contare quali regole fermano e quali danno falsi positivi.
+    Non riceve il comando e quindi non può scriverlo. Un registro che non si scrive non deve cambiare la decisione."""
+    try:
+        cartella = cartella_log(home)
+        cartella.mkdir(parents=True, exist_ok=True)
+        with open(cartella / REGISTRO, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"data": date.today().isoformat(), "azione": azione, "regola": regola}) + "\n")
+    except Exception:
+        pass
 
 
 def _sostituzioni(testo):
@@ -256,8 +299,8 @@ def valuta_percorso(percorso, regole, radice, home, cartella=None):
     Un percorso relativo si risolve da `cartella` (la cartella corrente della shell), i modelli relativi dalla radice del progetto."""
     bersaglio = _risolvi(percorso, cartella or radice, home)
     vault = (radice / ".claude" / "hooks" / "regole.json").is_file()
-    migliore = ("", "")
-    for r in regole:
+    migliore = NESSUNO
+    for posizione, r in enumerate(regole):
         if "percorsi" not in r or (r.get("solo_vault") and not vault):
             continue
         for modello in r["percorsi"]:
@@ -265,7 +308,7 @@ def valuta_percorso(percorso, regole, radice, home, cartella=None):
             base = _risolvi(modello[:-3] if cartella else modello, radice, home)
             if bersaglio == base or (cartella and bersaglio.startswith(base + os.sep)):
                 if FORZA[r["azione"]] > FORZA[migliore[0]]:
-                    migliore = (r["azione"], r["motivo"])
+                    migliore = (r["azione"], r["motivo"], nome_di(r, posizione))
     return migliore
 
 
@@ -279,8 +322,8 @@ def _opzione(arg, opz):
 
 
 def valuta_argv(argv, regole, config=()):
-    migliore = ("", "")
-    for r in regole:
+    migliore = NESSUNO
+    for posizione, r in enumerate(regole):
         parole = r.get("comando")
         if not parole or argv[:len(parole)] != parole:
             continue
@@ -290,13 +333,19 @@ def valuta_argv(argv, regole, config=()):
             continue
         if "tranne_argomento" in r and any(re.search(r["tranne_argomento"], a) for a in posizionali):
             continue
+        # Le condizioni e_* devono valere tutte. Servono a distinguere chi scrive da chi legge: `git config core.hooksPath`
+        # da solo legge il valore, con un secondo argomento lo cambia.
+        if "e_argomento" in r and not any(re.search(r["e_argomento"], a) for a in posizionali):
+            continue
+        if len(posizionali) < r.get("e_almeno_argomenti", 0):
+            continue
         condizioni = [k for k in ("se_opzione", "se_argomento", "se_config") if k in r]
         vale = not condizioni or (
             any(_opzione(a, o) for a in args for o in r.get("se_opzione", []))
             or ("se_argomento" in r and any(re.search(r["se_argomento"], a) for a in posizionali))
             or ("se_config" in r and any(re.search(r["se_config"], c) for c in config)))
         if vale and FORZA[r["azione"]] > FORZA[migliore[0]]:
-            migliore = (r["azione"], r["motivo"])
+            migliore = (r["azione"], r["motivo"], nome_di(r, posizione))
     return migliore
 
 
@@ -307,7 +356,7 @@ def _piu_forte(a, b):
 def decidi(evento, regole, radice, home):
     strumento = evento.get("tool_name")
     dati = evento.get("tool_input") or {}
-    esito = ("", "")
+    esito = NESSUNO
     if strumento == "Bash":
         for argv, config, scritti in analizza(dati.get("command") or ""):
             esito = _piu_forte(esito, valuta_argv(argv, regole, config))
@@ -325,9 +374,11 @@ def main():
         evento = json.loads(sys.stdin.buffer.read().decode("utf-8"))  # su Windows stdin sarebbe cp1252
         regole = carica_regole(Path(__file__).resolve().parent / "regole.json")
         radice = Path(os.environ.get("CLAUDE_PROJECT_DIR") or evento.get("cwd") or os.getcwd())
-        azione, motivo = decidi(evento, regole, radice, Path.home())
+        azione, motivo, regola = decidi(evento, regole, radice, Path.home())
     except Exception as e:  # fallisce chiuso: un hook che va in errore con exit 1 non bloccherebbe nulla
-        azione, motivo = "chiedi", "regole.py: non riesco a valutare il comando (%s: %s)" % (type(e).__name__, e)
+        azione, motivo, regola = "chiedi", "regole.py: non riesco a valutare il comando (%s: %s)" % (type(e).__name__, e), ERRORE_INTERNO
+    if azione:
+        registra(azione, regola, Path.home())
     if azione == "nega":
         sys.stderr.write(motivo + "\n")
         return 2

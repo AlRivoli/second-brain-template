@@ -6,6 +6,7 @@ All notable changes to this project are written here. The format follows [Keep a
 
 ### Added
 - A learning loop (ADR-013). A corrected mistake leaves one dated line in "Recurring errors" of `CLAUDE.md`; a cause that comes back becomes a rule, and a rule that can be verified becomes a check. `/chiudi-giornata` proposes the line and `/weekly-review` the rule or the check; nothing is written without a yes, and unattended runs leave the proposal in "Da confermare". `scripts/verify` fails on a line of that section without a date. The rules hook now writes one line per block to `second-brain-regole.log` (date, rule name, action: never the command or a path), every rule in `regole.json` has an `id`, and `scripts/blocchi-regole.py` counts the blocks.
+- A project can record whether it is brought in line with the agent harness: an optional `- **Harness:**` line in its `STATE.md`, with one of `da decidere`, `adeguare (date)` or `non adeguare questo progetto (date)`. The refusal is explicit and dated; a missing line means the decision is open, so existing vaults are unaffected. `scripts/verify` fails on any other value. `scripts/harness-progetti.py` lists the state of every project (`senza repo`, `da decidere`, `escluso`, `da valutare`, `da rifare`, `da adeguare`, `conforme`) from that line and from `.claude/harness-status.json` in the project repo, read as untrusted data: four numbers and a date, nothing else. It never writes and skips the confidential folder.
 - Neutral `ADR-001` (vault boundaries) and `ADR-005` (radar filter) in `docs/adr/`, so every ADR the commands and scripts cite exists; `scripts/verify` now fails when a cited `ADR-NNN` has no file.
 - `.claude/rules/pwa.md`: the PWA and Android manifest rules, loaded only when you touch a manifest (they used to sit in `CLAUDE.md`).
 - Claude Code hooks in `.claude/hooks/`: `regole.py` with its single rule list `regole.json` (ADR-012) parses each Bash command like the shell and refuses or asks (force-push and history rewrites refused; push, PRs, deploys, `rm` ask), installed for every repo by `scripts/installa-regole.py` (offered by `setup.py`); `stop_verify.py`; and `code-reviewer`, a read-only adversarial reviewer subagent.
@@ -33,6 +34,7 @@ All notable changes to this project are written here. The format follows [Keep a
 ### Fixed
 - The `chiusura` job logged to `second-brain-chiusura.log` while `chiudi-giornata.py` writes `second-brain-chiudi.log`, so the dashboard showed "not started" for a job that ran every day. `jobs.json` has a `log` key per job; `chiusura` sets it.
 - The rules hook refused `git config core.hooksPath` even without a value, which only reads the setting. Setting it to anything but `scripts/hooks`, or unsetting it, is still refused.
+- "Avvia in Claude": the launch files were named from the clock alone. Where the clock moves in steps (Windows), a failed launch and its retry in the same step got the same name and the retry died with `FileExistsError`; the test for it failed about one run in two. The name now ends with a random suffix.
 
 ## [0.1.0] - 2026-11-03
 

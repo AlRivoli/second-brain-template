@@ -21,6 +21,10 @@ INDEX_ROW_START = re.compile(r'^\|\s*\[\[((?:\\\||[^\]])+)\]\]')
 INDEX_DATE_END = re.compile(r'(\d{4}-\d{2}-\d{2})\s*\|\s*$')
 CODE_SPAN = re.compile(r'`[^`]*`')
 UPDATED = re.compile(r'\*\*Aggiornato:\*\*\s*(\d{4}-\d{2}-\d{2})')
+# La decisione sull'harness per agenti, una riga facoltativa dello STATE (la legge scripts/harness-progetti.py)
+HARNESS = re.compile(r'^- \*\*Harness:\*\*(.*)$', re.M)
+HARNESS_VALORE = re.compile(r'da decidere|(?:adeguare|non adeguare questo progetto) \((\d{4}-\d{2}-\d{2})\)')
+HARNESS_AMMESSI = '"da decidere", "adeguare (AAAA-MM-GG)", "non adeguare questo progetto (AAAA-MM-GG)"'
 TIPI = {'frontend', 'backend', 'fullstack', 'altro'}  # colonna "tipo" di scaffold/registro.md
 PROFILI = {'personal', 'lavoro'}
 GH_ORIGINE = re.compile(r'gh:[\w.-]+/[\w.-]+')
@@ -47,6 +51,19 @@ def project_of(target):
 
 def is_skipped(path, root):
     return any(part in SKIP_DIRS for part in path.relative_to(root).parts)
+
+
+def harness_valido(valore):
+    """La decisione sull'harness di un progetto: uno dei tre valori ammessi, con una data che esiste. Il rifiuto è esplicito e datato."""
+    trovato = HARNESS_VALORE.fullmatch(valore)
+    if not trovato:
+        return False
+    if trovato.group(1):
+        try:
+            datetime.date.fromisoformat(trovato.group(1))
+        except ValueError:
+            return False
+    return True
 
 
 def check_projects(root, problems):
@@ -102,6 +119,12 @@ def check_projects(root, problems):
         for heading in required:
             if heading not in present:
                 problems.append(f'{rel}: manca la sezione "{heading}"')
+        harness = HARNESS.findall(text)
+        if len(harness) > 1:
+            problems.append(f'{rel}: più di una riga Harness')
+        elif harness and not harness_valido(harness[0].strip()):
+            # il valore trovato non si ripete: è testo libero, il messaggio dice cosa è ammesso
+            problems.append(f'{rel}: valore di Harness non valido: ammessi {HARNESS_AMMESSI}')
         updated = UPDATED.search(text)
         if not updated:
             problems.append(f'{rel}: manca "Aggiornato"')

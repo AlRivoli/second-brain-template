@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -174,6 +175,50 @@ class DoctorTest(unittest.TestCase):
                 self.assertIn(chiave, lingua)
         for voce in doctor.INSTALLA.values():
             self.assertEqual(set(voce), {"macos", "linux", "windows"})
+
+
+class DoctorHookTest(unittest.TestCase):
+    """L'hook di commit (gitleaks, verify, test) si attiva a mano, una volta per clone: senza, un clone nuovo committa senza controlli."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.radice = Path(self._tmp.name)
+        (self.radice / "scripts" / "hooks").mkdir(parents=True)
+        (self.radice / "scripts" / "hooks" / "pre-commit").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+
+    def git(self, *argomenti):
+        return subprocess.run(["git", "-C", str(self.radice), *argomenti], capture_output=True, text=True)
+
+    def chiavi(self):
+        return {chiave: (richiesto, ok) for chiave, richiesto, ok in doctor.controlli(self.radice, ci=True)}
+
+    def test_in_un_clone_senza_la_configurazione_l_hook_risulta_spento_ma_non_blocca(self):
+        self.git("init", "-q")
+        self.assertIs(doctor.hook_attivo(self.radice), False)
+        self.assertEqual(self.chiavi()["hook"], (False, False), "facoltativo: in CI e in un clone appena fatto non deve far fallire doctor")
+
+    def test_con_core_hookspath_su_scripts_hooks_risulta_attivo(self):
+        self.git("init", "-q")
+        self.git("config", "core.hooksPath", "scripts/hooks")
+        self.assertIs(doctor.hook_attivo(self.radice), True)
+        self.assertEqual(self.chiavi()["hook"], (False, True))
+
+    def test_un_altro_percorso_non_vale(self):
+        self.git("init", "-q")
+        self.git("config", "core.hooksPath", ".git/hooks")
+        self.assertIs(doctor.hook_attivo(self.radice), False)
+
+    def test_fuori_da_un_repo_git_o_senza_l_hook_il_controllo_non_compare(self):
+        self.assertIsNone(doctor.hook_attivo(self.radice))  # cartella scaricata come zip: niente git, niente da attivare
+        self.assertNotIn("hook", self.chiavi())
+        self.git("init", "-q")
+        (self.radice / "scripts" / "hooks" / "pre-commit").unlink()
+        self.assertIsNone(doctor.hook_attivo(self.radice))
+
+    def test_il_rimedio_e_il_comando_da_lanciare(self):
+        for sistema in ("macos", "linux", "windows"):
+            self.assertEqual(doctor.INSTALLA["hook"][sistema], "git config core.hooksPath scripts/hooks")
 
 
 if __name__ == "__main__":

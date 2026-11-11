@@ -263,10 +263,38 @@ def check_scaffold(root, problems):
             problems.append(f'{where}: origine "{origine}" non riconosciuta (gh:proprietario/repo o locale:percorso)')
 
 
+ERRORE_DATATO = re.compile(r'^- (\d{4}-\d{2}-\d{2})(?!\d)')
+SEZIONI_ERRORI = ('recurring errors', 'errori ricorrenti')
+
+
+def check_errori_ricorrenti(root, problems):
+    """Nella sezione «Recurring errors» di CLAUDE.md ogni riga di elenco comincia con una data che esiste (ADR-013).
+
+    È il registro degli errori corretti: la rilettura settimanale conta quante volte torna la stessa causa, e una riga
+    senza data non dice quando. Il testo della riga non si ripete nel messaggio. Senza CLAUDE.md non c'è nulla da controllare.
+    """
+    claude = root / 'CLAUDE.md'
+    if not claude.is_file():
+        return
+    dentro = False
+    for number, line in enumerate(read(claude).splitlines(), 1):
+        if line.startswith('## '):
+            dentro = line[3:].strip().lower() in SEZIONI_ERRORI
+        elif dentro and line.startswith('- '):
+            trovata = ERRORE_DATATO.match(line)
+            try:
+                valida = bool(trovata) and bool(datetime.date.fromisoformat(trovata.group(1)))
+            except ValueError:
+                valida = False
+            if not valida:
+                problems.append(f'CLAUDE.md:{number}: riga di "Recurring errors" senza data: deve cominciare con "- AAAA-MM-GG"')
+
+
 def main(argv):
     root = pathlib.Path(argv[1]) if len(argv) > 1 else pathlib.Path(__file__).resolve().parent.parent
     problems = []
     check_projects(root, problems)
+    check_errori_ricorrenti(root, problems)
     check_wikilinks(root, problems)
     check_readme(root, problems)
     check_riferimenti_script(root, problems)

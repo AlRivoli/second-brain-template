@@ -43,6 +43,9 @@ NEGA = [
     "git commit \\\n  --no-verify -m x", "git reset \\\n  --hard", "git push \\\n  --force origin main", "echo a#b; git push --force",
     "rtk bypass git push --force", "rtk proxy git push --force", "git reset --ha HEAD", "git commit --am -m x", "git commit --ame",
     "git push --mirror", "bash -o pipefail -c 'git push -f'", "bash -c -- 'git push -f'",
+    # core.hooksPath: scriverlo o toglierlo salta il pre-commit, in ogni forma
+    "git config --local core.hooksPath /x", "git config --unset core.hooksPath", "git config --unset-all core.hookspath",
+    "git config unset core.hooksPath", "git -C x config core.hooksPath .",
 ]
 NIENTE = [
     "git status", "git log --oneline", 'git commit -m "push later"', "grep -r push docs/", "cat ~/.claude/settings.json",
@@ -54,6 +57,9 @@ NIENTE = [
     # revisione finale
     "git status # push dopo", "npm run build", "npx vitest run", "find . -name x", "gh api repos/a/b", "docker buildx build .",
     "git commit --all -m x", "git push-x --forc",
+    # leggere core.hooksPath non cambia nulla: prima veniva negato come se lo si scrivesse (falso positivo dell'11 novembre 2026)
+    "git config core.hooksPath", "git config --get core.hooksPath", "git -C x config core.hooksPath", "git config --local --get core.hookspath",
+    "git config --unset user.name",
 ]
 
 
@@ -61,6 +67,8 @@ def lancia(evento, home, radice, cartella=None):
     """(azione, motivo, stdout) come li vede Claude Code: exit 2 = nega, JSON ask = chiedi, altrimenti niente."""
     env = dict(os.environ) if os.name == "nt" else {"PATH": "/usr/bin:/bin:/opt/homebrew/bin"}  # Windows: serve SYSTEMROOT
     env.update({"HOME": str(home), "USERPROFILE": str(home), "CLAUDE_PROJECT_DIR": str(radice)})
+    # il registro dei blocchi sta nella cartella dei log del sistema: anche quella deve cadere sotto la home finta
+    env.update({"LOCALAPPDATA": str(Path(home) / "AppData" / "Local"), "XDG_STATE_HOME": str(Path(home) / ".local" / "state")})
     dati = evento if isinstance(evento, str) else json.dumps(evento)
     r = subprocess.run([sys.executable, "-I", str(Path(cartella or HOOKS) / "regole.py")], input=dati, capture_output=True, text=True, env=env)
     if r.returncode == 2:
@@ -230,6 +238,95 @@ class Percorsi(Base):
         for r in regole:
             if "percorsi" in r:
                 self.assertIn((r["azione"], r["motivo"]), visti, r)
+
+
+class Registro(Base):
+    """Ogni nega e ogni chiedi lascia una riga in un file locale: data, nome della regola, azione. Mai il comando, mai un percorso.
+
+    Serve a contare quali regole fermano più spesso e quali danno falsi positivi (rilettura settimanale).
+    """
+
+    def log(self):
+        # stessa cartella di scripts/percorsi.py, calcolata sulla home finta dei test
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import percorsi
+        ambiente = {"LOCALAPPDATA": str(self.home / "AppData" / "Local"), "XDG_STATE_HOME": str(self.home / ".local" / "state")}
+        return percorsi.cartella_log(home=self.home, ambiente=ambiente) / "second-brain-regole.log"
+
+    def righe(self):
+        return [json.loads(r) for r in self.log().read_text(encoding="utf-8").splitlines()] if self.log().is_file() else []
+
+    def test_un_nega_e_un_chiedi_lasciano_una_riga_ciascuno(self):
+        self.assertEqual(self.decisione(bash("git push --force origin main"))[0], "nega")
+        self.assertEqual(self.decisione(bash("git push origin main"))[0], "chiedi")
+        righe = self.righe()
+        self.assertEqual([(r["azione"], r["regola"]) for r in righe], [("nega", "force-push"), ("chiedi", "push")])
+        for r in righe:
+            self.assertEqual(sorted(r), ["azione", "data", "regola"])
+            self.assertRegex(r["data"], r"^\d{4}-\d{2}-\d{2}$")
+
+    def test_un_comando_che_passa_non_scrive_nulla(self):
+        self.assertEqual(self.decisione(bash("git status"))[0], "")
+        self.assertFalse(self.log().exists())
+
+    def test_nel_registro_non_finiscono_ne_il_comando_ne_i_percorsi(self):
+        self.decisione(bash("git push --force https://utente:tokensegreto@host.example/repo.git ramo-cliente-acme"))
+        self.decisione(bash("rm -rf /srv/progetti/cliente-acme/segreti.txt"))
+        self.decisione(modifica(str(self.home / ".claude" / "hooks" / "regole.py")))
+        testo = self.log().read_text(encoding="utf-8")
+        for vietato in ("tokensegreto", "acme", "/srv", "host.example", str(self.home), "segreti"):
+            self.assertNotIn(vietato, testo)
+        self.assertEqual([r["regola"] for r in self.righe()], ["force-push", "rm", "guardrail-utente"])
+
+    def test_un_errore_interno_si_registra_come_tale(self):
+        self.assertEqual(self.decisione("{non json")[0], "chiedi")
+        self.assertEqual([(r["azione"], r["regola"]) for r in self.righe()], [("chiedi", "errore-interno")])
+
+    def test_se_il_registro_non_si_puo_scrivere_la_decisione_non_cambia(self):
+        self.log().parent.mkdir(parents=True, exist_ok=True)
+        self.log().mkdir()  # una cartella al posto del file: l'apertura fallisce
+        self.assertEqual(self.decisione(bash("git push --force"))[0], "nega")
+        self.assertEqual(self.decisione(bash("git push"))[0], "chiedi")
+        self.assertEqual(self.decisione(bash("git status"))[0], "")
+
+    def test_ogni_regola_ha_un_nome_unico_scritto_in_minuscolo(self):
+        regole = json.loads((HOOKS / "regole.json").read_text(encoding="utf-8"))["regole"]
+        nomi = [r.get("id") for r in regole]
+        for nome in nomi:
+            self.assertRegex(nome or "", r"^[a-z0-9][a-z0-9-]*$")
+        self.assertEqual(len(nomi), len(set(nomi)), "nomi ripetuti")
+
+    def test_una_regola_senza_nome_funziona_e_prende_il_numero_di_riga(self):
+        # chi ha un regole.json suo, scritto prima dei nomi, non deve trovarsi ogni comando in «chiedi»
+        cartella = Path(self.tmp.name) / "hook"
+        cartella.mkdir()
+        shutil.copy(HOOKS / "regole.py", cartella)
+        regole = [{"azione": "chiedi", "comando": ["ls"], "motivo": "m1"}, {"azione": "nega", "comando": ["git", "push"], "motivo": "m2"}]
+        (cartella / "regole.json").write_text(json.dumps({"regole": regole}), encoding="utf-8")
+        self.assertEqual(self.decisione(bash("git push"), cartella)[0], "nega")
+        self.assertEqual(self.righe()[-1]["regola"], "regola-2")
+
+    def test_un_nome_o_una_condizione_malformati_fanno_chiedere(self):
+        for difetto in ({"id": "Con Spazi"}, {"id": 7}, {"e_almeno_argomenti": "due"}, {"e_almeno_argomenti": 0}, {"e_argomento": "("}):
+            cartella = Path(tempfile.mkdtemp(dir=self.tmp.name))
+            shutil.copy(HOOKS / "regole.py", cartella)
+            regola = dict({"azione": "nega", "comando": ["x"], "motivo": "m"}, **difetto)
+            (cartella / "regole.json").write_text(json.dumps({"regole": [regola]}), encoding="utf-8")
+            self.assertEqual(self.decisione(bash("ls"), cartella)[0], "chiedi", difetto)
+
+    def test_la_cartella_del_registro_e_quella_degli_altri_log(self):
+        # regole.py viene copiato da solo in ~/.claude/hooks e non può importare scripts/percorsi.py: la regola è ripetuta lì.
+        # Questo test la tiene uguale, così ruota-log.py e blocchi-regole.py trovano il file.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("regole_hook", HOOKS / "regole.py")
+        hook = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook)
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import percorsi
+        for piattaforma in ("darwin", "win32", "linux"):
+            for ambiente in ({}, {"LOCALAPPDATA": str(self.home / "altrove"), "XDG_STATE_HOME": str(self.home / "stato")}):
+                self.assertEqual(hook.cartella_log(self.home, ambiente, piattaforma), percorsi.cartella_log(self.home, piattaforma, ambiente),
+                                 (piattaforma, ambiente))
 
 
 if __name__ == "__main__":

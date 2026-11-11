@@ -26,6 +26,8 @@ class ChiudiGiornata(unittest.TestCase):
         self.chiamate = []
         self.stati = []        # uscite successive di `git status --porcelain`
         self.attivita = ""
+        self.blocchi = ""      # uscita di blocchi-regole.py
+        self.blocchi_rc = 0
         self.verify_rc = 0
         self.in_stage = ""  # uscita di `git diff --cached --name-only -z`
         self.commit_rc = 0
@@ -43,6 +45,8 @@ class ChiudiGiornata(unittest.TestCase):
             return Esito(stdout=self.stati.pop(0))
         if cmd[-1].endswith("attivita-progetti.py"):
             return Esito(stdout=self.attivita)
+        if "scripts/blocchi-regole.py" in cmd:
+            return Esito(self.blocchi_rc, self.blocchi)
         if cmd[-1].endswith("verify"):
             return Esito(self.verify_rc)
         if cmd[:3] == ["git", "diff", "--cached"]:
@@ -56,7 +60,9 @@ class ChiudiGiornata(unittest.TestCase):
                               lambda *a: self.segnalazioni.append(a))
 
     def nomi(self):
-        return [c[0] if c[0] == "claude" else " ".join(c[:2]) if c[0] == "git" else "script:" + Path(c[-1]).name for c in self.chiamate]
+        # lo script è l'argomento che comincia con scripts/, non sempre l'ultimo (blocchi-regole.py ha delle opzioni dopo)
+        return [c[0] if c[0] == "claude" else " ".join(c[:2]) if c[0] == "git" else "script:" + Path(next((a for a in c if a.startswith("scripts/")), c[-1])).name
+                for c in self.chiamate]
 
     def leggi_log(self):
         return self.log.read_text(encoding="utf-8")
@@ -87,11 +93,39 @@ class ChiudiGiornata(unittest.TestCase):
         self.attivita = "fse: 3 commit\n"
         self.stati = [" M x", " M STATE.md"]
         self.vai()
-        self.assertEqual(self.nomi(), ["script:attivita-progetti.py", "claude", "git status", "script:verify", "git diff", "git add", "git commit"])
-        prompt = self.chiamate[1][-1]
+        self.assertEqual(self.nomi(), ["script:attivita-progetti.py", "script:blocchi-regole.py", "claude", "git status", "script:verify", "git diff", "git add", "git commit"])
+        prompt = self.chiamate[2][-1]
         self.assertEqual(prompt, "/chiudi-giornata\nAttività dei repo dall'ultimo STATE:\nfse: 3 commit")
         self.assertEqual(self.chiamate[-1][3:5], ["-m", "chiusura 2026-11-03"])
         self.assertIn("commit: chiusura 2026-11-03", self.leggi_log())
+
+    def test_i_blocchi_delle_regole_di_oggi_entrano_nel_prompt(self):
+        # ADR-013: la chiusura rilegge gli errori del giorno. Senza Bash il modello non può contarli: glieli passa lo script.
+        self.attivita = "fse: 3 commit\n"
+        self.blocchi = "force-push: 2 nega\npush: 1 chiedi\n"
+        self.stati = [" M x", ""]
+        self.vai()
+        conta = next(c for c in self.chiamate if "scripts/blocchi-regole.py" in c)
+        self.assertEqual(conta[1:], ["-I", "scripts/blocchi-regole.py", "--giorni", "1"])
+        prompt = next(c for c in self.chiamate if c[0] == "claude")[-1]
+        self.assertEqual(prompt, "/chiudi-giornata\nAttività dei repo dall'ultimo STATE:\nfse: 3 commit\n"
+                                 "Blocchi delle regole di oggi (nome della regola: quante volte):\nforce-push: 2 nega\npush: 1 chiedi")
+
+    def test_se_il_conteggio_dei_blocchi_fallisce_la_chiusura_va_avanti_senza(self):
+        self.attivita = "fse: 3 commit\n"
+        self.blocchi, self.blocchi_rc = "Traceback: qualcosa è andato storto", 1
+        self.stati = [" M x", " M STATE.md"]
+        self.vai()
+        prompt = next(c for c in self.chiamate if c[0] == "claude")[-1]
+        self.assertEqual(prompt, "/chiudi-giornata\nAttività dei repo dall'ultimo STATE:\nfse: 3 commit")
+        self.assertIn("git commit", self.nomi())
+
+    def test_senza_niente_da_aggiornare_i_blocchi_non_si_contano(self):
+        # i blocchi da soli non fanno partire il modello ogni sera
+        self.blocchi = "push: 1 chiedi\n"
+        self.stati = [""]
+        self.vai()
+        self.assertEqual(self.nomi(), ["script:attivita-progetti.py", "git status"])
 
     def test_committa_solo_le_cartelle_dove_si_scrive_in_autonomia(self):
         # ADR-004: inbox, radar, daily, projects, content. Il lavoro di ricerca o i report non finiscono nel commit notturno.

@@ -50,4 +50,8 @@ Delegate from the main session. Subagents do not start others (enforced by leavi
 
 ## Recurring errors
 
-Dated lines, added by the agent when a correction repeats. Any other change to this file needs confirmation.
+The log of corrected mistakes ([ADR-013](docs/adr/ADR-013-learning-loop.md)). One dated line per mistake, proposed by `/chiudi-giornata` and written only after a yes:
+
+`- YYYY-MM-DD · what happened · causa: why · layer: nessuno | regola <file> | check <name>`
+
+The first time a cause shows up it gets the line. The second time `/weekly-review` proposes a rule in `.claude/rules/` with `paths`, or a check when it can be verified. No secrets, names or client details here. In unattended runs the proposal goes to "Da confermare" in the day's `daily/` file. Any other change to this file needs confirmation.

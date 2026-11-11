@@ -7,7 +7,8 @@ Usage:
     python3 doctor.py --lang it  messages in Italian
 
 Required: Python 3.9+, git, the Claude Code CLI, and `scripts/verify` printing OK.
-Optional: Ollama (local model for the radar filter), a Chromium-based browser (post images), gitleaks (for maintainers).
+Optional: Ollama (local model for the radar filter), a Chromium-based browser (post images), gitleaks (for maintainers),
+and the commit hook switched on in this clone (it is one command, and nothing reminds you to run it).
 """
 import importlib.util
 import json
@@ -32,14 +33,18 @@ INSTALLA = {
     "browser": {"macos": "install Google Chrome from https://www.google.com/chrome/", "linux": "sudo apt install chromium  (or Chrome)",
                 "windows": "Microsoft Edge is already installed; or install Chrome"},
     "gitleaks": {"macos": "brew install gitleaks", "linux": "see https://github.com/gitleaks/gitleaks#installing", "windows": "winget install gitleaks.gitleaks"},
+    "hook": dict.fromkeys(("macos", "linux", "windows"), "git config core.hooksPath scripts/hooks"),
 }
+COMANDI = {"hook"}  # il rimedio è un comando da lanciare, non un programma da installare
 TESTI = {
-    "en": {"ok": "OK", "missing": "MISSING", "optional": "optional, missing", "fix": "install:", "all_ok": "Everything required is in place.",
+    "en": {"ok": "OK", "missing": "MISSING", "optional": "optional, missing", "fix": "install:", "run": "run:", "all_ok": "Everything required is in place.",
+           "hook": "commit hook active (secret scan, vault rules and tests before every commit)",
            "some_missing": "Fix the MISSING items above, then run this again.",
            "python": "Python 3.9 or newer", "git": "git", "claude": "Claude Code (claude)", "verify": "vault rules (scripts/verify)",
            "ollama": "Ollama running (local model)", "browser": "Chrome, Chromium or Edge (post images)", "gitleaks": "gitleaks (secret scan)",
            "config": "config.json (run setup.py)"},
-    "it": {"ok": "OK", "missing": "MANCA", "optional": "facoltativo, manca", "fix": "installa:", "all_ok": "Tutto il necessario c'è.",
+    "it": {"ok": "OK", "missing": "MANCA", "optional": "facoltativo, manca", "fix": "installa:", "run": "lancia:", "all_ok": "Tutto il necessario c'è.",
+           "hook": "hook di commit attivo (controllo segreti, regole del vault e test prima di ogni commit)",
            "some_missing": "Sistema le voci MANCA qui sopra, poi rilancia.",
            "python": "Python 3.9 o più recente", "git": "git", "claude": "Claude Code (claude)", "verify": "regole del vault (scripts/verify)",
            "ollama": "Ollama in esecuzione (modello locale)", "browser": "Chrome, Chromium o Edge (immagini dei post)", "gitleaks": "gitleaks (controllo segreti)",
@@ -153,9 +158,27 @@ def dalle_scelte(radice=RADICE, lingua="en", scaricati=None, ram=None, obsidian=
     return out
 
 
+def hook_attivo(radice=RADICE):
+    """True se l'hook di commit è attivo in questo clone (core.hooksPath = scripts/hooks), False se non lo è.
+    None se non c'è nulla da attivare: la cartella non è un repo git, git manca, o scripts/hooks/pre-commit non c'è.
+    L'hook si attiva a mano, una volta per clone: un clone o un worktree nuovo committa senza gitleaks, verify e test
+    finché qualcuno non se ne accorge."""
+    if shutil.which("git") is None or not (Path(radice) / "scripts" / "hooks" / "pre-commit").is_file():
+        return None
+    try:
+        if subprocess.run(["git", "-C", str(radice), "rev-parse", "--git-dir"], capture_output=True).returncode != 0:
+            return None
+        r = subprocess.run(["git", "-C", str(radice), "config", "core.hooksPath"], capture_output=True, text=True)
+    except OSError:
+        return None
+    return r.stdout.strip().replace("\\", "/").rstrip("/") == "scripts/hooks"
+
+
 def controlli(radice=RADICE, ci=False):
-    """Lista di (chiave, richiesto, ok). In CI il CLI `claude` non è richiesto: i runner non lo hanno."""
+    """Lista di (chiave, richiesto, ok). In CI il CLI `claude` non è richiesto: i runner non lo hanno.
+    L'hook di commit è facoltativo, così un clone appena fatto e la CI non falliscono, e compare solo dove si può attivare."""
     verify = radice / "scripts" / "verify"
+    hook = hook_attivo(radice)
     return [
         ("python", True, sys.version_info >= (3, 9)),
         ("git", True, shutil.which("git") is not None),
@@ -165,7 +188,7 @@ def controlli(radice=RADICE, ci=False):
         ("ollama", False, ollama_attivo()),
         ("browser", False, trova_browser() is not None),
         ("gitleaks", False, shutil.which("gitleaks") is not None),
-    ]
+    ] + ([("hook", False, hook)] if hook is not None else [])
 
 
 def main(argv=None):
@@ -181,7 +204,7 @@ def main(argv=None):
         print("%-9s %s" % (stato, t[chiave]))
         if not ok:
             if chiave in INSTALLA:
-                print("          %s %s" % (t["fix"], INSTALLA[chiave][SISTEMA]))
+                print("          %s %s" % (t["run" if chiave in COMANDI else "fix"], INSTALLA[chiave][SISTEMA]))
             mancano += 1 if richiesto else 0
     if not ci:
         for testo, rimedio, richiesto in dalle_scelte(RADICE, lingua):

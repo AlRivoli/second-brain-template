@@ -31,7 +31,9 @@
       "Bash(python scripts/verify *)",
       "Bash(py -3 scripts/verify *)",
       "Bash(python3 -I scripts/attivita-progetti.py *)",
-      "Bash(py -3 -I scripts/attivita-progetti.py *)"
+      "Bash(py -3 -I scripts/attivita-progetti.py *)",
+      "Bash(python3 -I scripts/blocchi-regole.py *)",
+      "Bash(py -3 -I scripts/blocchi-regole.py *)"
     ],
     "deny": [
       "Read(/projects/_private/**)",

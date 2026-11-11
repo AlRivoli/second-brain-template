@@ -42,6 +42,7 @@ genera_plist = _modulo(HERE.parent / "genera_plist.py") if (HERE.parent / "gener
 servizi_modulo = _modulo(HERE / "servizi.py")
 post_modulo = _modulo(HERE / "post.py")
 richieste_modulo = _modulo(HERE / "richieste.py")
+harness_modulo = _modulo(HERE.parent / "harness-progetti.py")
 agenda_modulo = _modulo(HERE / "agenda.py")
 assistente_modulo = _modulo(HERE / "assistente.py")
 limiti_modulo = _modulo(HERE / "limiti.py")
@@ -738,6 +739,254 @@ def progetti_indice(vault):
     return out
 
 
+NOME_PROGETTO = re.compile(r"[a-z0-9][a-z0-9-]{0,59}")
+# nomi che Windows riserva ai dispositivi: una cartella «con» o «nul» non si crea
+NOMI_RISERVATI = {"lavoro", "con", "prn", "aux", "nul"} | {"%s%d" % (p, i) for p in ("com", "lpt") for i in range(10)}
+PRIORITA = ("alta", "media", "bassa")
+REPO_MASSIMO = 400
+# i soli codici d'errore che vanno al client: il testo di un'altra eccezione può contenere un percorso del disco
+CODICI_PROGETTO = {"nome", "repo", "stack", "priorita", "lavoro", "esiste", "template", "riga", "harness", "spento", "senza-repo", "righe"}
+RIGA_REPO = re.compile(r"^- \*\*Repo:\*\* .*$", re.M)
+
+
+def _cartelle_riservate(vault):
+    """Nomi (in minuscolo) delle cartelle di projects/ che la dashboard non crea e non legge: lavoro e la cartella riservata
+    scelta al setup (moduli.riservata.cartella), trovata come fa scripts/verify."""
+    nomi = {"lavoro", "_private"}
+    try:
+        scelta = json.loads((vault / "config.json").read_text(encoding="utf-8"))["moduli"]["riservata"]["cartella"].replace("\\", "/")
+        if scelta.startswith("projects/") and scelta.count("/") == 1:
+            nomi.add(scelta.split("/")[1])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        pass
+    return {n.casefold() for n in nomi}
+
+
+def _cella(valore, massimo):
+    """Il testo ripulito se può stare in una riga di Markdown che poi legge un agente: una riga sola, senza caratteri di controllo,
+    senza | < > e senza wikilink o backtick (un [[link]] piantato qui l'agente lo seguirebbe). Altrimenti None."""
+    if not isinstance(valore, str):
+        return None
+    valore = valore.strip()
+    if (len(valore) > massimo or any(c in valore for c in "|<>`") or "[[" in valore or "]]" in valore
+            or any(unicodedata.category(c) in CATEGORIE_VIETATE for c in valore)):
+        return None
+    return valore
+
+
+def _in_cartella_riservata(percorso, vault, riservate):
+    """Confronto sul testo del percorso, senza toccare il disco e senza distinguere le maiuscole (NTFS e APFS non le distinguono)."""
+    p = os.path.normpath(str(percorso)).casefold()
+    basi = {os.path.normpath(str(radice / "projects" / n)).casefold() for radice in (vault, vault.resolve()) for n in riservate}
+    return any(p == b or p.startswith(b + os.sep) for b in basi)
+
+
+def _percorso_locale(percorso):
+    """Un percorso assoluto su un disco di questo computer: non di rete (\\\\server\\share) né un dispositivo (\\\\.\\, \\\\?\\).
+    Su Windows deve avere una lettera di unità. Da chiamare su un Path: «/\\srv\\share» diventa un percorso di rete solo lì."""
+    if not percorso.is_absolute() or str(percorso).startswith(("\\\\", "//")) or percorso.drive.startswith(("\\\\", "//")):
+        return False
+    return os.name != "nt" or re.fullmatch(r"[A-Za-z]:", percorso.drive) is not None
+
+
+def _repo_del_progetto(repo, vault, riservate):
+    """Il percorso assoluto di un repo git scritto dall'utente, o ValueError("repo"). Prima di toccare il disco scarta i percorsi
+    di rete (aprirebbero una connessione verso un altro computer) e quelli dentro le cartelle del lavoro o riservate; poi ripete
+    gli stessi controlli sul percorso risolto, che è quello che finisce nello STATE: un link può portare altrove."""
+    testo = _cella(repo, REPO_MASSIMO)
+    if not testo:
+        raise ValueError("repo")
+    percorso = Path(os.path.expanduser(testo))
+    if not _percorso_locale(percorso) or _in_cartella_riservata(percorso, vault, riservate):
+        raise ValueError("repo")
+    try:
+        percorso = percorso.resolve()
+        valido = (percorso / ".git").exists()
+    except (OSError, RuntimeError):  # RuntimeError: un giro di link simbolici
+        valido = False
+    if (not valido or not _percorso_locale(percorso) or _in_cartella_riservata(percorso, vault, riservate)
+            or _cella(str(percorso), REPO_MASSIMO) != str(percorso)):
+        raise ValueError("repo")
+    return percorso
+
+
+# La decisione sull'harness per agenti di un progetto: una riga dello STATE (la legge scripts/harness-progetti.py).
+# I tre valori che il client può mandare; il testo della riga lo scrive il server, con la data.
+DECISIONI_HARNESS = ("da decidere", "adeguare", "non adeguare")
+RIGA_HARNESS = re.compile(r"^- \*\*Harness:\*\*[^\r\n]*(\r?\n)?", re.M)
+RIGA_AGGIORNATO = re.compile(r"^(- \*\*Aggiornato:\*\* )\d{4}-\d{2}-\d{2}", re.M)
+DATA_IN_FONDO = re.compile(r"\d{4}-\d{2}-\d{2}(\s*\|\s*)$")
+RIGHE_STATE_MASSIME = 20  # come scripts/verify: righe non vuote
+COMANDO_AUDIT = "/ai-native-harness:audit"
+
+
+def _riga_harness(decisione, oggi):
+    if decisione == "da decidere":
+        return "- **Harness:** da decidere"
+    return "- **Harness:** %s (%s)" % ("adeguare" if decisione == "adeguare" else "non adeguare questo progetto", oggi)
+
+
+def _con_harness(stato, riga):
+    """Lo STATE con la riga dell'harness: al posto di quella che c'è, altrimenti subito sotto l'ultima riga `Repo:`.
+    Tiene gli a capo del file."""
+    eol = "\r\n" if "\r\n" in stato else "\n"
+    senza = RIGA_HARNESS.sub("", stato)
+    repo = list(RIGA_REPO.finditer(senza))
+    if not repo:
+        return senza  # senza una riga Repo non c'è un progetto da adeguare
+    fine = repo[-1].end()
+    if senza[fine - 1] == "\r":  # in un file con a capo CRLF il punto del modello si prende anche il \r
+        fine -= 1
+    dopo = senza[fine:]
+    salto = 2 if dopo.startswith("\r\n") else 1 if dopo.startswith("\n") else 0
+    return senza[:fine] + eol + riga + eol + dopo[salto:]
+
+
+def nuovo_progetto(nome, repo=None, stack=None, priorita=None, vault=None, oggi=None, harness=None):
+    """Crea projects/<nome>/STATE.md da templates/STATE.md e la riga in projects/INDEX.md, come /nuovo-progetto.
+    ValueError con il campo non valido: nome, repo, stack, priorita, harness. RuntimeError: esiste, template.
+    Con un repo e il modulo dell'harness acceso la decisione è obbligatoria: «da decidere» è una risposta, il silenzio no.
+    Se la riga dell'indice non si scrive, lo STATE appena creato si toglie: scripts/verify non resta rotto a metà."""
+    vault = vault or VAULT
+    riservate = _cartelle_riservate(vault)
+    if not (isinstance(nome, str) and NOME_PROGETTO.fullmatch(nome)) or nome in NOMI_RISERVATI or nome in riservate:
+        raise ValueError("nome")
+    stack = _cella(stack or "", TESTO_MASSIMO)
+    if stack is None:
+        raise ValueError("stack")
+    if priorita not in (None, "") + PRIORITA:
+        raise ValueError("priorita")
+    percorso_repo = _repo_del_progetto(repo, vault, riservate) if repo not in (None, "") else None
+    decisione = None
+    if percorso_repo and harness_modulo.attivo_in(vault):
+        if harness not in DECISIONI_HARNESS:
+            raise ValueError("harness")
+        decisione = harness
+    oggi = oggi or datetime.now().strftime("%Y-%m-%d")
+    try:
+        stato = (vault / "templates" / "STATE.md").read_text(encoding="utf-8")
+        riga = next(r for r in (vault / "templates" / "project-index-row.md").read_text(encoding="utf-8").splitlines() if RIGA_PROGETTO.match(r))
+    except (OSError, StopIteration):
+        raise RuntimeError("template")
+    stato = stato.replace("{{title}}", nome).replace("{{date:YYYY-MM-DD}}", oggi)
+    if percorso_repo:
+        stato = RIGA_REPO.sub(lambda m: "- **Repo:** %s" % percorso_repo, stato, count=1)  # lambda: i \ di un percorso Windows non sono escape
+    if decisione:
+        stato = _con_harness(stato, _riga_harness(decisione, oggi))
+    riga = riga.replace("<nome>", nome).replace("{{date:YYYY-MM-DD}}", oggi)
+    if stack:
+        riga = riga.replace("<stack>", stack)
+    if priorita:
+        riga = _con_priorita(riga, priorita)
+    cartella, indice = vault / "projects" / nome, vault / "projects" / "INDEX.md"
+    with BLOCCO_PIANO:
+        # casefold: su NTFS e APFS «Alfa» e «alfa» sono la stessa cartella
+        if nome in progetti_indice(vault) or any(p.name.casefold() == nome for p in (vault / "projects").iterdir()):
+            raise RuntimeError("esiste")
+        cartella.mkdir()
+        try:
+            with open(cartella / "STATE.md", "x", encoding="utf-8", newline="\n") as f:
+                f.write(stato)
+            with open(indice, encoding="utf-8", newline="") as f:
+                righe = f.read().splitlines(keepends=True)
+            eol = "\r\n" if righe and righe[0].endswith("\r\n") else "\n"
+            if righe and not righe[-1].endswith("\n"):
+                righe[-1] += eol
+            tabella = [i for i, r in enumerate(righe) if r.startswith("|")]
+            pos = tabella[-1] + 1 if tabella else len(righe)
+            righe.insert(pos, riga + eol)
+            _scrivi_atomico(indice, righe)
+        except BaseException:
+            shutil.rmtree(cartella, ignore_errors=True)
+            raise
+    return {"ok": True, "nome": nome}
+
+
+def _con_priorita(riga, priorita):
+    """La riga dell'indice con la cella della priorità cambiata. Il pipe del wikilink è escapato (\\|): la priorità è la cella 5."""
+    celle = riga.split("|")
+    if len(celle) < 7 or not celle[1].endswith("\\"):  # senza l'alias \| le celle scalano: la 5 sarebbe la data
+        raise RuntimeError("riga")
+    celle[5] = " %s " % priorita
+    return "|".join(celle)
+
+
+def imposta_priorita(nome, priorita, vault=None):
+    """Scrive alta, media o bassa nella riga del progetto in projects/INDEX.md; il resto della riga e del file resta com'è.
+    ValueError: priorità non valida o progetto del lavoro. LookupError: progetto assente. RuntimeError("riga"): riga non leggibile."""
+    vault = vault or VAULT
+    if not isinstance(nome, str) or priorita not in PRIORITA:
+        raise ValueError("priorita")
+    if nome.casefold() in _cartelle_riservate(vault):  # una riga col nome di una cartella riservata non si tocca
+        raise ValueError("lavoro")
+    indice = vault / "projects" / "INDEX.md"
+    with BLOCCO_PIANO:
+        with open(indice, encoding="utf-8", newline="") as f:
+            righe = f.read().splitlines(keepends=True)
+        for i, r in enumerate(righe):
+            if (w := RIGA_LAVORO.match(r)) and w.group(1).lower() == nome.lower():
+                raise ValueError("lavoro")
+            m = RIGA_PROGETTO.match(r)
+            if m and m.group(1).lower() == nome.lower():
+                corpo = r.rstrip("\r\n")
+                righe[i] = _con_priorita(corpo, priorita) + r[len(corpo):]
+                _scrivi_atomico(indice, righe)
+                return {"ok": True, "priorita": priorita}
+    raise LookupError(nome)
+
+
+def imposta_harness(nome, decisione, vault=None, oggi=None):
+    """Scrive nello STATE del progetto la decisione sull'harness: «da decidere», «adeguare» o «non adeguare» (il rifiuto esplicito).
+    Aggiorna insieme la data dello STATE e quella della sua riga in INDEX.md, che scripts/verify confronta.
+    ValueError: harness (valore o nome non validi), lavoro. LookupError: progetto assente.
+    RuntimeError: spento (modulo non attivo), senza-repo, righe (lo STATE supererebbe le 20 righe), riga (riga dell'indice non leggibile).
+    «adeguare» segna solo la decisione: l'audit lo lancia l'utente nel repo, perché esegue i check del progetto."""
+    vault = vault or VAULT
+    if not isinstance(nome, str) or not isinstance(decisione, str) or decisione not in DECISIONI_HARNESS:
+        raise ValueError("harness")
+    if nome.casefold() in _cartelle_riservate(vault):
+        raise ValueError("lavoro")
+    if not harness_modulo.attivo_in(vault):
+        raise RuntimeError("spento")
+    oggi = oggi or datetime.now().strftime("%Y-%m-%d")
+    indice = vault / "projects" / "INDEX.md"
+    with BLOCCO_PIANO:
+        with open(indice, encoding="utf-8", newline="") as f:
+            righe = f.read().splitlines(keepends=True)
+        pos = vero = None
+        for i, r in enumerate(righe):
+            if (w := RIGA_LAVORO.match(r)) and w.group(1).lower() == nome.lower():
+                raise ValueError("lavoro")
+            m = RIGA_PROGETTO.match(r)
+            if m and m.group(1).lower() == nome.lower():
+                pos, vero = i, m.group(1)
+                break
+        if pos is None:
+            raise LookupError(nome)
+        file_stato = vault / "projects" / vero / "STATE.md"
+        try:
+            with open(file_stato, encoding="utf-8", newline="") as f:
+                prima = f.read()
+        except OSError:
+            raise LookupError(nome)
+        if not harness_modulo.repo_del_progetto(prima):
+            raise RuntimeError("senza-repo")
+        dopo = RIGA_AGGIORNATO.sub(lambda m: m.group(1) + oggi, _con_harness(prima, _riga_harness(decisione, oggi)), count=1)
+        if len([r for r in dopo.splitlines() if r.strip()]) > RIGHE_STATE_MASSIME:
+            raise RuntimeError("righe")
+        corpo = righe[pos].rstrip("\r\n")
+        if not DATA_IN_FONDO.search(corpo):
+            raise RuntimeError("riga")
+        righe[pos] = DATA_IN_FONDO.sub(lambda m: oggi + m.group(1), corpo) + righe[pos][len(corpo):]
+        _scrivi_atomico(file_stato, [dopo])
+        try:
+            _scrivi_atomico(indice, righe)
+        except BaseException:
+            _scrivi_atomico(file_stato, [prima])  # le due date devono restare uguali: meglio nessuna modifica che una a metà
+            raise
+    return {"ok": True, "decisione": decisione, "comando": COMANDO_AUDIT if decisione == "adeguare" else None}
+
+
 def _cartella_di(tipo, info, vault):
     """Cartella di un nodo: prima del progetto che esiste, altrimenti il vault; None per i progetti del lavoro o se risolve nella loro cartella."""
     lavoro = (vault / "projects" / "lavoro").resolve()
@@ -805,10 +1054,18 @@ def mappa(adesso, piano_file=None, vault=None):
     """Nodi (progetti, argomenti, «Senza nodo») con i loro task di piano.md, prossima azione e conteggi."""
     vault = vault or VAULT
     indice = progetti_indice(vault)
+    # Lo stato dell'harness di ogni progetto, solo se il modulo è acceso: senza, la mappa non ne parla.
+    # Lo script non legge le cartelle del lavoro e riservate, e dal riepilogo dei repo prende solo numeri e una data.
+    harness_attivo = harness_modulo.attivo_in(vault)
+    harness = {v["progetto"].lower(): v for v in harness_modulo.stato_progetti(vault, adesso.date())} if harness_attivo else {}
     def nuovo(i):
-        return {"nome": i["nome"], "tipo": "progetto", "priorita": i["priorita"],
+        nodo = {"nome": i["nome"], "tipo": "progetto", "priorita": i["priorita"],
                 "haCartella": _cartella_di("progetto", i, vault) is not None,
                 "cartella": _str_o_none(_cartella_di("progetto", i, vault)), "task": []}
+        voce = harness.get(i["nome"].lower())
+        if voce and not i.get("lavoro"):
+            nodo["harness"] = {"stato": voce["stato"], "decisione": voce["decisione"], "data": voce["data_decisione"], "report": voce["report"]}
+        return nodo
     nodi = {n: nuovo(i) for n, i in indice.items() if not i.get("lavoro")}  # i progetti del lavoro senza voci non compaiono
     if "social" not in nodi:  # nodo fisso: LinkedIn e Instagram. Le sue bozze non entrano in prossima azione né nei conteggi (non sono righe di piano.md)
         nodi["social"] = {"nome": "Social", "tipo": "argomento", "priorita": None, "haCartella": True, "cartella": str(vault), "task": task_social(vault)}
@@ -844,10 +1101,13 @@ def mappa(adesso, piano_file=None, vault=None):
     conta = lambda f: sum(1 for r in aperte if f(r))
     aperti = lambda n: sum(1 for t in n["task"] if t["stato"] != "fatto")
     ordinati = sorted(nodi.values(), key=lambda n: (not (scelta and n is scelta[0]), -aperti(n), n["nome"].lower()))
-    return {"nodi": ordinati, "prossima": prossima, "nome": nome_per_saluto(vault),
-            "conteggi": {"da_fare": conta(lambda r: r[1]["stato"] == "da_fare"),
-                         "in_corso": conta(lambda r: r[1]["stato"] == "in_corso"),
-                         "in_ritardo": conta(lambda r: r[2])}}
+    out = {"nodi": ordinati, "prossima": prossima, "nome": nome_per_saluto(vault),
+           "conteggi": {"da_fare": conta(lambda r: r[1]["stato"] == "da_fare"),
+                        "in_corso": conta(lambda r: r[1]["stato"] == "in_corso"),
+                        "in_ritardo": conta(lambda r: r[2])}}
+    if harness_attivo:  # chi resta da decidere compare finché non c'è una risposta: un silenzio non vale come un no
+        out["harness"] = {"attivo": True, "daDecidere": sorted(n["nome"] for n in ordinati if (n.get("harness") or {}).get("stato") == "da decidere")}
+    return out
 
 
 def ultimo_controllo_skill():
@@ -962,13 +1222,26 @@ ULTIMI_AVVII = {}  # (data, testo) -> momento dell'ultimo avvio: ignora il doppi
 BLOCCO_AVVII = threading.Lock()
 
 
-def avvia_claude(data, testo, esegui=None, piano_file=None, vault=None, cartella_avvii=None, sistema=None, adesso=time.monotonic):
-    """Apre il Terminale con `claude` nella cartella del nodo della voce e la mette in corso. Solo macOS.
-    NotImplementedError: non è un Mac. LookupError: voce assente. RuntimeError con codice: doppia, cartella, ripetuto, apertura.
-    Il testo della voce finisce solo in un file letto da `cat`: mai in una stringa di shell o di AppleScript."""
-    if (sistema or sys.platform) != "darwin":
-        raise NotImplementedError("solo macOS")
-    esegui = esegui or subprocess.run
+def _apri_console_windows(cartella, prompt, esegui=None, quale=None):
+    """Una console nuova con `claude.exe` nella cartella. Senza shell: il prompt è un solo argomento, citato da CreateProcess.
+    Un claude.cmd o .ps1 non si lancia: passerebbe da cmd.exe o PowerShell, che rileggono &, %VAR% e virgolette nel testo della voce."""
+    claude = (quale or shutil.which)("claude")
+    if not claude or not claude.lower().endswith(".exe"):
+        raise RuntimeError("apertura")
+    try:
+        (esegui or subprocess.Popen)([claude, prompt], cwd=str(cartella), creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0x10))
+    except (OSError, subprocess.SubprocessError):
+        raise RuntimeError("apertura")
+
+
+def avvia_claude(data, testo, esegui=None, piano_file=None, vault=None, cartella_avvii=None, sistema=None, adesso=time.monotonic, quale=None):
+    """Apre un terminale con `claude` nella cartella del nodo della voce e la mette in corso. macOS (Terminale) e Windows (console nuova).
+    NotImplementedError: altro sistema. LookupError: voce assente. RuntimeError con codice: doppia, cartella, ripetuto, apertura.
+    Il testo della voce non finisce mai in una stringa di shell o di AppleScript: su macOS sta in un file letto da `cat`,
+    su Windows è un argomento di claude.exe lanciato senza shell."""
+    sistema = sistema or sys.platform
+    if sistema not in ("darwin", "win32"):
+        raise NotImplementedError("solo macOS e Windows")
     vault = vault or VAULT
     piano_file = piano_file or vault / "docs" / "piano.md"
     trovati = [(n, t) for n in mappa(datetime.now(), piano_file, vault)["nodi"] for t in n["task"] if t["data"] == data and t["testo"] == testo]
@@ -987,28 +1260,33 @@ def avvia_claude(data, testo, esegui=None, piano_file=None, vault=None, cartella
         if chiave in ULTIMI_AVVII and adesso() - ULTIMI_AVVII[chiave] < 10:
             raise RuntimeError("ripetuto")
         ULTIMI_AVVII[chiave] = adesso()
+    prompt = ("Task dal piano del vault (nodo #%s): %s. Lavoraci in questa cartella seguendo le regole del progetto; "
+              "quando hai finito dimmelo, la spunta la metto io dalla dashboard.") % (nodo["nome"], task["vista"])
     try:
-        cartella_avvii = cartella_avvii or percorsi.cartella_log() / "avvii-claude"
-        cartella_avvii.mkdir(mode=0o700, parents=True, exist_ok=True)
-        for f in cartella_avvii.iterdir():  # file di avvii vecchi di una settimana
-            if f.is_file() and f.stat().st_mtime < time.time() - 7 * 86400:
-                f.unlink()
-        base = cartella_avvii / datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-        file_prompt, file_comando = base.with_suffix(".txt"), base.with_suffix(".command")
-        prompt = ("Task dal piano del vault (nodo #%s): %s. Lavoraci in questa cartella seguendo le regole del progetto; "
-                  "quando hai finito dimmelo, la spunta la metto io dalla dashboard.") % (nodo["nome"], task["vista"])
-        for file, contenuto, modo in (
-                (file_prompt, prompt, 0o600),
-                (file_comando, "#!/bin/zsh -l\ncd %s && exec claude \"$(cat %s)\"\n" % (shlex.quote(str(cartella)), shlex.quote(str(file_prompt))), 0o700)):
-            fd = os.open(file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, modo)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(contenuto)
-        try:
-            r = esegui(["/usr/bin/open", "-a", "Terminal", str(file_comando)], check=False, timeout=10)
-        except subprocess.SubprocessError:
-            raise RuntimeError("apertura")
-        if r.returncode != 0:
-            raise RuntimeError("apertura")
+        if sistema == "win32":
+            _apri_console_windows(cartella, prompt, esegui, quale)
+        else:
+            cartella_avvii = cartella_avvii or percorsi.cartella_log() / "avvii-claude"
+            cartella_avvii.mkdir(mode=0o700, parents=True, exist_ok=True)
+            for f in cartella_avvii.iterdir():  # file di avvii vecchi di una settimana
+                if f.is_file() and f.stat().st_mtime < time.time() - 7 * 86400:
+                    f.unlink()
+            # L'orologio non basta a rendere unico il nome: su Windows avanza a scatti, e un avvio fallito con la riprova nello
+            # stesso scatto prendevano lo stesso file (FileExistsError). Il suffisso casuale lo rende unico, la data lo tiene leggibile.
+            base = cartella_avvii / (datetime.now().strftime("%Y%m%d-%H%M%S-%f") + "-" + os.urandom(4).hex())
+            file_prompt, file_comando = base.with_suffix(".txt"), base.with_suffix(".command")
+            for file, contenuto, modo in (
+                    (file_prompt, prompt, 0o600),
+                    (file_comando, "#!/bin/zsh -l\ncd %s && exec claude \"$(cat %s)\"\n" % (shlex.quote(str(cartella)), shlex.quote(str(file_prompt))), 0o700)):
+                fd = os.open(file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, modo)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(contenuto)
+            try:
+                r = (esegui or subprocess.run)(["/usr/bin/open", "-a", "Terminal", str(file_comando)], check=False, timeout=10)
+            except subprocess.SubprocessError:
+                raise RuntimeError("apertura")
+            if r.returncode != 0:
+                raise RuntimeError("apertura")
     except BaseException:
         ULTIMI_AVVII.pop(chiave, None)  # un avvio fallito si può riprovare subito
         raise
@@ -1405,6 +1683,9 @@ class Gestore(BaseHTTPRequestHandler):
         if percorso == "/api/piano/aggiungi":
             self._piano_aggiungi()
             return
+        if percorso in ("/api/mappa/progetto", "/api/mappa/priorita", "/api/mappa/harness"):
+            self._mappa_progetto(percorso.rsplit("/", 1)[1])
+            return
         if percorso == "/api/radar/feedback":
             self._vota()
             return
@@ -1516,6 +1797,31 @@ class Gestore(BaseHTTPRequestHandler):
             return
         except RuntimeError as e:
             self._json({"errore": str(e)}, 409)
+            return
+        except OSError:
+            self.send_error(500)
+            return
+        self._json(esito)
+
+    def _mappa_progetto(self, azione):
+        """azione: «progetto» (ne crea uno), «priorita» (cambia quella di un progetto dell'indice) o «harness» (scrive la decisione
+        sull'harness nello STATE). L'errore dice quale campo non va."""
+        corpo = self._corpo_json() or {}
+        try:
+            if azione == "progetto":
+                esito = nuovo_progetto(corpo.get("nome"), corpo.get("repo"), corpo.get("stack"), corpo.get("priorita"), harness=corpo.get("harness"))
+            elif azione == "harness":
+                esito = imposta_harness(corpo.get("nome"), corpo.get("decisione"))
+            else:
+                esito = imposta_priorita(corpo.get("nome"), corpo.get("priorita"))
+        except ValueError as e:
+            self._errore(400, str(e) if str(e) in CODICI_PROGETTO else "dati")
+            return
+        except LookupError:
+            self.send_error(404)
+            return
+        except RuntimeError as e:
+            self._errore(409, str(e) if str(e) in CODICI_PROGETTO else "errore")
             return
         except OSError:
             self.send_error(500)

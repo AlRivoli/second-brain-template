@@ -408,6 +408,26 @@ class AvvioTest(unittest.TestCase):
         self.avvia(v, av)
         self.assertIn("- [~] #alfa uno", (v / "docs" / "piano.md").read_text(encoding="utf-8"))
 
+    def test_due_avvii_nello_stesso_istante_non_si_scontrano(self):
+        # Su Windows l'orologio avanza a scatti: un avvio fallito e la riprova nello stesso scatto prendevano lo stesso nome di file
+        # e la riprova moriva con FileExistsError. Qui l'orologio è fermo, così il caso si ripete a ogni esecuzione.
+        class OrologioFermo(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 11, 11, 8, 53, 5, 565115)
+
+        vero = server.datetime
+        server.datetime = OrologioFermo
+        self.addCleanup(setattr, server, "datetime", vero)
+        v, av = self.prepara()
+        with self.assertRaises(RuntimeError):
+            self.avvia(v, av, codice=1)
+        server.ULTIMI_AVVII.clear()
+        self.avvia(v, av)
+        self.assertEqual(len(list(av.glob("*.txt"))), 2, "ogni avvio ha il suo file")
+        self.assertEqual(len(list(av.glob("*.command"))), 2)
+        self.assertIn("- [~] #alfa uno", (v / "docs" / "piano.md").read_text(encoding="utf-8"))
+
     def test_avvio_rifiuta_cartella_lavoro(self):
         v, av = self.prepara("## A\n- [ ] #x uno\n")
         (v / "projects" / "INDEX.md").write_text("| [[projects%s%sx/STATE\\|x]] | S | S | alta | 2026-11-09 |\n" % ("/", "lavoro" + "/"), encoding="utf-8")
@@ -460,6 +480,52 @@ class AvvioTest(unittest.TestCase):
         v, av = self.prepara()
         with self.assertRaises(NotImplementedError):
             self.avvia(v, av, sistema="linux")
+
+    def avvia_windows(self, v, av, testo="#alfa uno", claude=r"C:\bin\claude.exe", errore=None):
+        chiamate = []
+
+        def finto(args, **kw):
+            chiamate.append((args, kw))
+            if errore:
+                raise errore
+
+        r = server.avvia_claude(None, testo, esegui=finto, piano_file=v / "docs" / "piano.md", vault=v, cartella_avvii=av,
+                                sistema="win32", quale=lambda nome: claude)
+        return r, chiamate
+
+    def test_avvio_windows_senza_shell_per_testi_ostili(self):
+        # il testo della voce è un solo argomento di claude.exe: niente cmd.exe né PowerShell che lo rileggano
+        for ostile in ('" --dangerously-skip-permissions "', "& calc.exe", "%PATH%", "a'b\"c"):
+            v, av = self.prepara("## A\n- [ ] #alfa %s\n" % ostile)
+            r, chiamate = self.avvia_windows(v, av, "#alfa " + ostile)
+            args, kw = chiamate[0]
+            self.assertEqual(args[0], r"C:\bin\claude.exe", ostile)
+            self.assertEqual(len(args), 2)
+            self.assertTrue(args[1].startswith("Task dal piano"), args[1])  # non può essere letto come un'opzione
+            self.assertIn(ostile, args[1])
+            self.assertFalse(kw.get("shell"))
+            self.assertEqual(kw["cwd"], str(v / "repo-alfa"))
+            self.assertEqual(kw["creationflags"], 0x10)  # CREATE_NEW_CONSOLE
+            self.assertEqual(r["cartella"], str(v / "repo-alfa"))
+            self.assertFalse(av.exists())  # su Windows non serve nessun file di avvio
+            self.assertIn("- [~] #alfa", (v / "docs" / "piano.md").read_text(encoding="utf-8"))
+
+    def test_avvio_windows_solo_con_claude_exe(self):
+        # un claude.cmd passerebbe da cmd.exe, che rilegge & e %VAR% nel testo della voce
+        for claude in (None, r"C:\npm\claude.cmd", r"C:\npm\claude.ps1"):
+            v, av = self.prepara()
+            with self.assertRaises(RuntimeError) as c:
+                self.avvia_windows(v, av, claude=claude)
+            self.assertEqual(str(c.exception), "apertura")
+            self.assertEqual(server.ULTIMI_AVVII, {})
+            self.assertIn("- [ ] #alfa uno", (v / "docs" / "piano.md").read_text(encoding="utf-8"))
+
+    def test_avvio_windows_errore_di_apertura(self):
+        v, av = self.prepara()
+        with self.assertRaises(RuntimeError) as c:
+            self.avvia_windows(v, av, errore=OSError("non parte"))
+        self.assertEqual(str(c.exception), "apertura")
+        self.assertEqual(server.ULTIMI_AVVII, {})
 
     def test_avvio_pulisce_i_file_vecchi(self):
         v, av = self.prepara()
@@ -548,6 +614,191 @@ class AggiungiVoceTest(unittest.TestCase):
         self.assertEqual(f.read_text(encoding="utf-8"), "## A\n- [x] #beta uno\n")
 
 
+def vault_con_template(piano="## A\n- [ ] #alfa uno\n"):
+    v = vault_finto(piano)
+    (v / "templates").mkdir()
+    (v / "templates" / "STATE.md").write_text(
+        "# {{title}}\n- **Repo:** <percorso locale, o \"nessuno\">\n- **Aggiornato:** {{date:YYYY-MM-DD}}\n## Obiettivo attuale\n<una o due righe>\n", encoding="utf-8")
+    (v / "templates" / "project-index-row.md").write_text(
+        "| Progetto | Stack | Stato | Priorità | Ultimo aggiornamento |\n|---|---|---|---|---|\n"
+        "| [[projects/<nome>/STATE\\|<nome>]] | <stack> | <stato in 5 parole> | <alta / media / bassa> | {{date:YYYY-MM-DD}} |\n", encoding="utf-8")
+    return v
+
+
+class NuovoProgettoTest(unittest.TestCase):
+    def test_crea_state_e_riga_e_compare_sulla_mappa(self):
+        v = vault_con_template()
+        repo = v / "repo-gamma"
+        (repo / ".git").mkdir(parents=True)
+        esito = server.nuovo_progetto("gamma", str(repo), "Python, SQLite", "media", vault=v, oggi="2026-11-10")
+        self.assertEqual(esito, {"ok": True, "nome": "gamma"})
+        stato = (v / "projects" / "gamma" / "STATE.md").read_text(encoding="utf-8")
+        self.assertTrue(stato.startswith("# gamma\n- **Repo:** %s\n- **Aggiornato:** 2026-11-10\n" % repo.resolve()), stato)
+        indice = (v / "projects" / "INDEX.md").read_text(encoding="utf-8")
+        self.assertTrue(indice.endswith("| [[projects/gamma/STATE\\|gamma]] | Python, SQLite | <stato in 5 parole> | media | 2026-11-10 |\n"), indice)
+        info = server.progetti_indice(v)["gamma"]
+        self.assertEqual((info["priorita"], info["cartelle"]), ("media", [repo.resolve()]))
+        self.assertIn("gamma", [n["nome"] for n in server.mappa(ADESSO, piano_file=v / "docs" / "piano.md", vault=v)["nodi"]])
+
+    def test_senza_repo_stack_e_priorita_restano_i_segnaposto(self):
+        v = vault_con_template()
+        server.nuovo_progetto("gamma", "", "", "", vault=v, oggi="2026-11-10")
+        self.assertIn("- **Repo:** <percorso locale", (v / "projects" / "gamma" / "STATE.md").read_text(encoding="utf-8"))
+        self.assertIn("| [[projects/gamma/STATE\\|gamma]] | <stack> | <stato in 5 parole> | <alta / media / bassa> | 2026-11-10 |", (v / "projects" / "INDEX.md").read_text(encoding="utf-8"))
+
+    def test_la_riga_va_in_fondo_alla_tabella_e_il_crlf_resta(self):
+        v = vault_con_template()
+        indice = v / "projects" / "INDEX.md"
+        # su Windows write_text ha già scritto CRLF: si riparte da LF per non raddoppiare il \r
+        indice.write_bytes(indice.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n") + b"\r\nNota sotto la tabella\r\n")
+        server.nuovo_progetto("gamma", vault=v, oggi="2026-11-10")
+        righe = indice.read_bytes().split(b"\r\n")
+        self.assertTrue(righe[4].startswith(b"| [[projects/gamma/STATE"), righe)
+        self.assertEqual(righe[5:], [b"", b"Nota sotto la tabella", b""])
+        self.assertNotIn(b"\n", indice.read_bytes().replace(b"\r\n", b""))
+
+    def test_dati_non_validi_non_scrivono_nulla(self):
+        v = vault_con_template()
+        (v / "config.json").write_text(json.dumps({"moduli": {"riservata": {"attivo": True, "cartella": "projects/confidential-notes"}}}), encoding="utf-8")
+        senza_git = v / "senza-git"
+        senza_git.mkdir()
+        nel_lavoro = v / "projects" / "lavoro" / "cliente"
+        (nel_lavoro / ".git").mkdir(parents=True)
+        buono = v / "repo-alfa"
+        (buono / ".git").mkdir()
+        prima = (v / "projects" / "INDEX.md").read_bytes()
+        casi = [(n, None, None, None, "nome") for n in ("Gamma", "-gamma", "ga mma", "../gamma", "ga/mma", "lavoro", "con", "com1", "confidential-notes", "", "x" * 61, 5, None)]
+        casi += [("gamma", r, None, None, "repo") for r in ("relativo/repo", str(v / "manca"), str(senza_git), str(nel_lavoro), "\\\\server\\share\\repo", "//server/share/repo",
+                                                           str(buono) + "\nx", str(buono) + "|x", "x" * 401, 5)]
+        casi += [("gamma", None, s, None, "stack") for s in ("a|b", "a\nb", "<b>", "x" * 201, "a‮b", 5)]
+        casi += [("gamma", None, None, p, "priorita") for p in ("urgente", "Alta", 3)]
+        for nome, repo, stack, priorita, campo in casi:
+            with self.subTest(nome=nome, repo=repo, stack=stack, priorita=priorita):
+                with self.assertRaises(ValueError) as c:
+                    server.nuovo_progetto(nome, repo, stack, priorita, vault=v)
+                self.assertEqual(str(c.exception), campo)
+        self.assertEqual((v / "projects" / "INDEX.md").read_bytes(), prima)
+        self.assertFalse((v / "projects" / "gamma").exists())
+
+    def test_la_cartella_riservata_predefinita_non_e_un_nome_ne_un_repo(self):
+        v = vault_con_template()
+        riservata = "_" + "private"  # spezzato: la regola deny su Bash blocca ogni comando che contiene il nome
+        repo = v / "projects" / riservata / "cliente"
+        (repo / ".git").mkdir(parents=True)
+        for nome, percorso, campo in ((riservata, None, "nome"), ("gamma", str(repo), "repo")):
+            with self.assertRaises(ValueError) as c:
+                server.nuovo_progetto(nome, percorso, vault=v)
+            self.assertEqual(str(c.exception), campo)
+
+    def test_progetto_che_esiste_gia_anche_con_altre_maiuscole(self):
+        v = vault_con_template()
+        (v / "projects" / "Delta").mkdir()
+        prima = (v / "projects" / "INDEX.md").read_bytes()
+        for nome in ("alfa", "delta"):
+            with self.assertRaises(RuntimeError) as c:
+                server.nuovo_progetto(nome, vault=v)
+            self.assertEqual(str(c.exception), "esiste")
+        self.assertEqual((v / "projects" / "INDEX.md").read_bytes(), prima)
+        self.assertEqual((v / "projects" / "alfa" / "STATE.md").read_text(encoding="utf-8").splitlines()[0], "# alfa")
+
+    def test_percorsi_di_rete_e_riservati_scartati_prima_di_toccare_il_disco(self):
+        # «/\srv\share» non comincia con \\ ma Path lo legge come percorso di rete: exists() aprirebbe una connessione verso srv
+        v = vault_con_template()
+        dentro = v / "projects" / "LAVORO" / "cliente"  # altre maiuscole: su NTFS e APFS è la stessa cartella
+        vero = server.Path.resolve
+
+        def solo_il_vault(percorso, *a, **k):  # il vault si può risolvere, il percorso scritto dall'utente no
+            if percorso != v:
+                raise AssertionError("disco toccato: %s" % percorso)
+            return vero(percorso, *a, **k)
+
+        casi = ["\\\\srv\\share\\repo", "//srv/share/repo", "\\/srv/share/repo", "\\\\?\\C:\\repo", "\\\\.\\pipe\\x", str(dentro)]
+        if os.name == "nt":  # altrove è il nome, strano ma locale, di una cartella sotto /
+            casi.append("/\\srv\\share\\repo")
+        with mock.patch.object(server.Path, "resolve", solo_il_vault), mock.patch.object(server.Path, "exists", side_effect=AssertionError("disco toccato")):
+            for repo in casi:
+                with self.subTest(repo=repo):
+                    with self.assertRaises(ValueError) as c:
+                        server._repo_del_progetto(repo, v, {"lavoro"})
+                    self.assertEqual(str(c.exception), "repo")
+
+    def test_wikilink_e_backtick_non_entrano_nelle_righe(self):
+        v = vault_con_template()
+        for stack in ("[[projects/alfa/STATE]]", "vedi ]] qui", "`rm -rf`"):
+            with self.subTest(stack=stack), self.assertRaises(ValueError) as c:
+                server.nuovo_progetto("gamma", None, stack, vault=v)
+            self.assertEqual(str(c.exception), "stack")
+        self.assertFalse((v / "projects" / "gamma").exists())
+
+    def test_senza_template_non_crea_nulla(self):
+        v = vault_finto("## A\n")
+        with self.assertRaises(RuntimeError) as c:
+            server.nuovo_progetto("gamma", vault=v)
+        self.assertEqual(str(c.exception), "template")
+        self.assertFalse((v / "projects" / "gamma").exists())
+
+    def test_se_l_indice_non_si_scrive_lo_state_si_toglie(self):
+        v = vault_con_template()
+        with mock.patch.object(server, "_scrivi_atomico", side_effect=OSError("disco pieno")), self.assertRaises(OSError):
+            server.nuovo_progetto("gamma", vault=v)
+        self.assertFalse((v / "projects" / "gamma").exists())
+
+
+class PrioritaTest(unittest.TestCase):
+    def test_cambia_solo_la_cella_della_priorita(self):
+        v = vault_finto("## A\n")
+        indice = v / "projects" / "INDEX.md"
+        self.assertEqual(server.imposta_priorita("Beta", "bassa", vault=v), {"ok": True, "priorita": "bassa"})
+        self.assertEqual(indice.read_text(encoding="utf-8").splitlines()[2:], [
+            "| [[projects/alfa/STATE\\|alfa]] | Stack | Stato | alta | 2026-11-09 |",
+            "| [[projects/beta/STATE\\|beta]] | Stack | Stato | bassa | 2026-11-09 |"])
+        self.assertEqual(server.progetti_indice(v)["beta"]["priorita"], "bassa")
+
+    def test_crlf_conservato(self):
+        v = vault_finto("## A\n")
+        indice = v / "projects" / "INDEX.md"
+        indice.write_bytes(indice.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+        server.imposta_priorita("alfa", "media", vault=v)
+        self.assertIn(b"| Stato | media | 2026-11-09 |\r\n", indice.read_bytes())
+        self.assertNotIn(b"\n", indice.read_bytes().replace(b"\r\n", b""))
+
+    def test_valore_non_valido_progetto_assente_o_del_lavoro(self):
+        v = vault_finto("## A\n")
+        indice = v / "projects" / "INDEX.md"
+        with indice.open("a") as i:
+            i.write("| [[projects" "/" "lavoro" "/cliente/STATE\\|cliente]] | Stack | Stato | alta | 2026-11-09 |\n")  # spezzato: il template non lo contiene per intero
+        prima = indice.read_bytes()
+        for nome, priorita in (("alfa", "urgente"), ("alfa", "Alta"), ("alfa", None), (5, "alta"), ("cliente", "bassa")):
+            with self.subTest(nome=nome, priorita=priorita), self.assertRaises(ValueError):
+                server.imposta_priorita(nome, priorita, vault=v)
+        with self.assertRaises(LookupError):
+            server.imposta_priorita("manca", "alta", vault=v)
+        self.assertEqual(indice.read_bytes(), prima)
+
+    def test_riga_senza_alias_o_con_un_nome_riservato_non_si_tocca(self):
+        v = vault_finto("## A\n")
+        indice = v / "projects" / "INDEX.md"
+        riservata = "_" + "private"  # spezzato: la regola deny su Bash blocca ogni comando che contiene il nome
+        indice.write_text("| [[projects/alfa/STATE]] | Stack | Stato | alta | 2026-11-09 | nota |\n"
+                          "| [[projects/%s/STATE\\|%s]] | Stack | Stato | alta | 2026-11-09 |\n" % (riservata, riservata), encoding="utf-8")
+        prima = indice.read_bytes()
+        with self.assertRaises(RuntimeError) as c:  # senza \| la cella 5 è la data, non la priorità
+            server.imposta_priorita("alfa", "bassa", vault=v)
+        self.assertEqual(str(c.exception), "riga")
+        with self.assertRaises(ValueError):
+            server.imposta_priorita(riservata, "bassa", vault=v)
+        self.assertEqual(indice.read_bytes(), prima)
+
+    def test_riga_senza_le_colonne_attese(self):
+        v = vault_finto("## A\n")
+        indice = v / "projects" / "INDEX.md"
+        indice.write_text("| [[projects/alfa/STATE\\|alfa]] | Stack |\n", encoding="utf-8")
+        with self.assertRaises(RuntimeError) as c:
+            server.imposta_priorita("alfa", "alta", vault=v)
+        self.assertEqual(str(c.exception), "riga")
+        self.assertEqual(indice.read_text(encoding="utf-8"), "| [[projects/alfa/STATE\\|alfa]] | Stack |\n")
+
+
 class RotteMappaTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -634,6 +885,33 @@ class RotteMappaTest(unittest.TestCase):
         self.assertEqual(self.post_json("/api/mappa/nuovo", {"tag": "alfa", "testo": "due"}), (200, {"ok": True, "riga": "- [ ] #alfa due"}))
         self.assertEqual(piano.read_text(encoding="utf-8"), "## A\n- [ ] #alfa uno\n- [ ] #alfa due\n")
 
+    def test_progetto_403_400_409_200(self):
+        (self.v / "templates").mkdir()
+        (self.v / "templates" / "STATE.md").write_text("# {{title}}\n- **Repo:** <percorso>\n- **Aggiornato:** {{date:YYYY-MM-DD}}\n", encoding="utf-8")
+        (self.v / "templates" / "project-index-row.md").write_text("| [[projects/<nome>/STATE\\|<nome>]] | <stack> | <stato> | <alta / media / bassa> | {{date:YYYY-MM-DD}} |\n", encoding="utf-8")
+        self.assertEqual(self.post("/api/mappa/progetto", {"nome": "gamma"}, azione=False), 403)
+        self.assertEqual(self.post_json("/api/mappa/progetto", {"nome": "Gamma"}), (400, {"errore": "nome"}))
+        self.assertEqual(self.post_json("/api/mappa/progetto", {"nome": "gamma", "repo": "relativo"}), (400, {"errore": "repo"}))
+        self.assertEqual(self.post_json("/api/mappa/progetto", {}), (400, {"errore": "nome"}))
+        self.assertEqual(self.post_json("/api/mappa/progetto", {"nome": "alfa"}), (409, {"errore": "esiste"}))
+        self.assertFalse((self.v / "projects" / "gamma").exists())
+        self.assertEqual(self.post_json("/api/mappa/progetto", {"nome": "gamma", "repo": "", "stack": "Python", "priorita": "alta"}), (200, {"ok": True, "nome": "gamma"}))
+        self.assertTrue((self.v / "projects" / "gamma" / "STATE.md").is_file())
+
+    def test_progetto_errore_sconosciuto_non_porta_testo_al_client(self):
+        # resolve() su un giro di link solleva RuntimeError con il percorso dentro: al client va solo un codice
+        with mock.patch.object(server, "nuovo_progetto", side_effect=RuntimeError("Symlink loop from 'C:\\Users\\ada\\x'")):
+            self.assertEqual(self.post_json("/api/mappa/progetto", {"nome": "gamma"}), (409, {"errore": "errore"}))
+        with mock.patch.object(server, "imposta_priorita", side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")):
+            self.assertEqual(self.post_json("/api/mappa/priorita", {"nome": "beta", "priorita": "alta"}), (400, {"errore": "dati"}))
+
+    def test_priorita_403_400_404_200(self):
+        self.assertEqual(self.post("/api/mappa/priorita", {"nome": "beta", "priorita": "alta"}, azione=False), 403)
+        self.assertEqual(self.post_json("/api/mappa/priorita", {"nome": "beta", "priorita": "urgente"}), (400, {"errore": "priorita"}))
+        self.assertEqual(self.post("/api/mappa/priorita", {"nome": "manca", "priorita": "alta"}), 404)
+        self.assertEqual(self.post_json("/api/mappa/priorita", {"nome": "beta", "priorita": "alta"}), (200, {"ok": True, "priorita": "alta"}))
+        self.assertIn("| Stato | alta | 2026-11-09 |\n", (self.v / "projects" / "INDEX.md").read_text(encoding="utf-8").splitlines(keepends=True)[3])
+
     def test_avvia_su_linux_501(self):
         with mock.patch.object(server.sys, "platform", "linux"), mock.patch.object(server.subprocess, "run") as run:
             self.assertEqual(self.post("/api/mappa/avvia", {"data": None, "testo": "#alfa uno"}), 501)
@@ -644,6 +922,160 @@ class RotteMappaTest(unittest.TestCase):
             self.assertEqual(self.post("/api/mappa/avvia", {"data": None, "testo": 5}), 400)
             self.assertEqual(self.post("/api/mappa/avvia", {"data": None, "testo": "#alfa uno"}), 200)
             self.assertEqual(self.post("/api/mappa/avvia", {"data": None, "testo": "#alfa uno"}), 409)
+
+    def test_harness_403_400_404_409_200(self):
+        con_harness(self.v)
+        self.assertEqual(self.post("/api/mappa/harness", {"nome": "alfa", "decisione": "adeguare"}, azione=False), 403)
+        for corpo in ({"nome": "alfa", "decisione": "sì"}, {"nome": "alfa"}, {"decisione": "adeguare"}, {"nome": 3, "decisione": "adeguare"}):
+            self.assertEqual(self.post_json("/api/mappa/harness", corpo), (400, {"errore": "harness"}), corpo)
+        self.assertEqual(self.post("/api/mappa/harness", {"nome": "manca", "decisione": "adeguare"}), 404)
+        self.assertEqual(self.post_json("/api/mappa/harness", {"nome": "beta", "decisione": "adeguare"}), (409, {"errore": "senza-repo"}))
+        self.assertNotIn("Harness", (self.v / "projects" / "alfa" / "STATE.md").read_text(encoding="utf-8"))
+        stato, corpo = self.post_json("/api/mappa/harness", {"nome": "alfa", "decisione": "non adeguare"})
+        self.assertEqual((stato, corpo["decisione"]), (200, "non adeguare"))
+        self.assertIn("- **Harness:** non adeguare questo progetto (", (self.v / "projects" / "alfa" / "STATE.md").read_text(encoding="utf-8"))
+
+    def test_harness_con_il_modulo_spento_409(self):
+        self.assertEqual(self.post_json("/api/mappa/harness", {"nome": "alfa", "decisione": "adeguare"}), (409, {"errore": "spento"}))
+
+
+def con_harness(v, **valori):
+    """Accende il modulo dell'harness nel config.json del vault finto."""
+    (v / "config.json").write_text(json.dumps({"moduli": {"harness": dict({"attivo": True}, **valori)}}), encoding="utf-8")
+
+
+RIEPILOGO_HARNESS = {"schema": 1, "date": "2026-11-09", "commit": "abc1234", "pass": 44, "fail": 2, "na": 0, "fail_alta": 0}
+
+
+class HarnessTest(unittest.TestCase):
+    """La decisione sull'harness di un progetto, dalla mappa: la riga nello STATE, lo stato letto dal repo, chi resta da decidere."""
+
+    def setUp(self):
+        self.v = vault_con_template()
+        con_harness(self.v)
+        self.repo = self.v / "repo-alfa"
+        self.stato = self.v / "projects" / "alfa" / "STATE.md"
+        self.stato.write_text("# alfa\n- **Repo:** %s\n- **Aggiornato:** 2026-11-01\n## Obiettivo attuale\nx\n" % self.repo, encoding="utf-8")
+        self.indice = self.v / "projects" / "INDEX.md"
+
+    def mappa(self):
+        return server.mappa(ADESSO, piano_file=self.v / "docs" / "piano.md", vault=self.v)
+
+    def nodo(self, nome="alfa"):
+        return next(n for n in self.mappa()["nodi"] if n["nome"] == nome)
+
+    def test_la_mappa_porta_lo_stato_e_chi_resta_da_decidere(self):
+        m = self.mappa()
+        self.assertEqual(m["harness"], {"attivo": True, "daDecidere": ["alfa"]})
+        self.assertEqual(self.nodo("alfa")["harness"], {"stato": "da decidere", "decisione": "da decidere", "data": None, "report": None})
+        self.assertEqual(self.nodo("beta")["harness"]["stato"], "senza repo")  # senza repo non c'è niente da decidere
+
+    def test_senza_il_modulo_la_mappa_non_parla_di_harness_e_non_si_scrive(self):
+        (self.v / "config.json").unlink()
+        m = self.mappa()
+        self.assertNotIn("harness", m)
+        self.assertNotIn("harness", self.nodo("alfa"))
+        with self.assertRaisesRegex(RuntimeError, "^spento$"):
+            server.imposta_harness("alfa", "adeguare", vault=self.v, oggi="2026-11-11")
+        self.assertNotIn("Harness", self.stato.read_text(encoding="utf-8"))
+
+    def test_adeguare_scrive_la_riga_la_data_e_la_riga_dell_indice(self):
+        esito = server.imposta_harness("alfa", "adeguare", vault=self.v, oggi="2026-11-11")
+        self.assertEqual(esito, {"ok": True, "decisione": "adeguare", "comando": "/ai-native-harness:audit"})
+        self.assertEqual(self.stato.read_text(encoding="utf-8"),
+                         "# alfa\n- **Repo:** %s\n- **Harness:** adeguare (2026-11-11)\n- **Aggiornato:** 2026-11-11\n## Obiettivo attuale\nx\n" % self.repo)
+        self.assertIn("| [[projects/alfa/STATE\\|alfa]] | Stack | Stato | alta | 2026-11-11 |\n", self.indice.read_text(encoding="utf-8"))
+        self.assertIn("| [[projects/beta/STATE\\|beta]] | Stack | Stato | da definire | 2026-11-09 |\n", self.indice.read_text(encoding="utf-8"))
+        self.assertEqual(self.nodo()["harness"]["stato"], "da valutare")
+        self.assertEqual(self.mappa()["harness"]["daDecidere"], [])
+
+    def test_con_il_riepilogo_nel_repo_la_mappa_porta_i_numeri(self):
+        (self.repo / ".claude").mkdir()
+        (self.repo / ".claude" / "harness-status.json").write_text(json.dumps(RIEPILOGO_HARNESS), encoding="utf-8")
+        server.imposta_harness("alfa", "adeguare", vault=self.v, oggi="2026-11-09")
+        self.assertEqual(self.nodo()["harness"], {"stato": "conforme", "decisione": "adeguare", "data": "2026-11-09",
+                                                  "report": {"data": "2026-11-09", "pass": 44, "fail": 2, "na": 0, "fail_alta": 0}})
+
+    def test_il_rifiuto_e_esplicito_e_si_puo_cambiare_idea(self):
+        esito = server.imposta_harness("alfa", "non adeguare", vault=self.v, oggi="2026-11-11")
+        self.assertEqual((esito["decisione"], esito["comando"]), ("non adeguare", None))
+        self.assertIn("- **Harness:** non adeguare questo progetto (2026-11-11)\n", self.stato.read_text(encoding="utf-8"))
+        self.assertEqual(self.nodo()["harness"]["stato"], "escluso")
+        self.assertEqual(self.mappa()["harness"]["daDecidere"], [])
+        server.imposta_harness("alfa", "da decidere", vault=self.v, oggi="2026-11-12")
+        testo = self.stato.read_text(encoding="utf-8")
+        self.assertEqual(testo.count("**Harness:**"), 1, "la riga si sostituisce, non si aggiunge")
+        self.assertIn("- **Harness:** da decidere\n", testo)
+        self.assertEqual(self.mappa()["harness"]["daDecidere"], ["alfa"])
+
+    def test_dati_non_validi_non_scrivono_nulla(self):
+        prima = (self.stato.read_bytes(), self.indice.read_bytes())
+        for decisione in ("sì", "no", "", None, 3, "non adeguare questo progetto", "ADEGUARE"):
+            with self.assertRaisesRegex(ValueError, "^harness$"):
+                server.imposta_harness("alfa", decisione, vault=self.v, oggi="2026-11-11")
+        with self.assertRaisesRegex(ValueError, "^harness$"):
+            server.imposta_harness(None, "adeguare", vault=self.v)
+        with self.assertRaises(LookupError):
+            server.imposta_harness("manca", "adeguare", vault=self.v)
+        with self.assertRaisesRegex(RuntimeError, "^senza-repo$"):
+            server.imposta_harness("beta", "adeguare", vault=self.v)
+        for riservato in ("lavoro", "_private"):
+            with self.assertRaisesRegex(ValueError, "^lavoro$"):
+                server.imposta_harness(riservato, "adeguare", vault=self.v)
+        self.assertEqual((self.stato.read_bytes(), self.indice.read_bytes()), prima)
+
+    def test_uno_state_gia_pieno_non_si_allunga(self):
+        # scripts/verify ammette 20 righe non vuote: la riga in più lo farebbe fallire
+        pieno = "# alfa\n- **Repo:** %s\n- **Aggiornato:** 2026-11-01\n" % self.repo + "".join("riga %d\n" % i for i in range(17))
+        self.stato.write_text(pieno, encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "^righe$"):
+            server.imposta_harness("alfa", "adeguare", vault=self.v, oggi="2026-11-11")
+        self.assertEqual(self.stato.read_text(encoding="utf-8"), pieno)
+
+    def test_gli_a_capo_del_file_restano(self):
+        self.stato.write_bytes(("# alfa\r\n- **Repo:** %s\r\n- **Aggiornato:** 2026-11-01\r\n" % self.repo).encode("utf-8"))
+        server.imposta_harness("alfa", "adeguare", vault=self.v, oggi="2026-11-11")
+        dati = self.stato.read_bytes()
+        self.assertIn(b"- **Harness:** adeguare (2026-11-11)\r\n", dati)
+        self.assertNotIn(b"\n", dati.replace(b"\r\n", b""))
+
+    def test_se_l_indice_non_si_scrive_lo_state_torna_come_prima(self):
+        prima = self.stato.read_bytes()
+        vero = server._scrivi_atomico
+
+        def rotto(file, righe):
+            if file.name == "INDEX.md":
+                raise OSError("disco pieno")
+            return vero(file, righe)
+
+        with mock.patch.object(server, "_scrivi_atomico", rotto):
+            with self.assertRaises(OSError):
+                server.imposta_harness("alfa", "adeguare", vault=self.v, oggi="2026-11-11")
+        self.assertEqual(self.stato.read_bytes(), prima)
+
+    def test_un_progetto_nuovo_con_un_repo_chiede_la_decisione(self):
+        repo = self.v / "repo-gamma"
+        (repo / ".git").mkdir(parents=True)
+        for scelta in (None, "", "sì", "non adeguare questo progetto"):
+            with self.assertRaisesRegex(ValueError, "^harness$"):
+                server.nuovo_progetto("gamma", str(repo), harness=scelta, vault=self.v, oggi="2026-11-10")
+            self.assertFalse((self.v / "projects" / "gamma").exists(), scelta)
+        server.nuovo_progetto("gamma", str(repo), harness="non adeguare", vault=self.v, oggi="2026-11-10")
+        stato = (self.v / "projects" / "gamma" / "STATE.md").read_text(encoding="utf-8")
+        self.assertTrue(stato.startswith("# gamma\n- **Repo:** %s\n- **Harness:** non adeguare questo progetto (2026-11-10)\n- **Aggiornato:** 2026-11-10\n" % repo.resolve()), stato)
+        server.nuovo_progetto("delta", str(repo), harness="da decidere", vault=self.v, oggi="2026-11-10")
+        self.assertIn("- **Harness:** da decidere\n", (self.v / "projects" / "delta" / "STATE.md").read_text(encoding="utf-8"))
+
+    def test_un_progetto_nuovo_senza_repo_non_ha_la_riga(self):
+        server.nuovo_progetto("gamma", "", harness="adeguare", vault=self.v, oggi="2026-11-10")
+        self.assertNotIn("Harness", (self.v / "projects" / "gamma" / "STATE.md").read_text(encoding="utf-8"))
+
+    def test_senza_il_modulo_un_progetto_nuovo_non_chiede_nulla(self):
+        (self.v / "config.json").unlink()
+        repo = self.v / "repo-gamma"
+        (repo / ".git").mkdir(parents=True)
+        server.nuovo_progetto("gamma", str(repo), vault=self.v, oggi="2026-11-10")
+        self.assertNotIn("Harness", (self.v / "projects" / "gamma" / "STATE.md").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

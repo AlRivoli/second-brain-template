@@ -21,6 +21,28 @@ Today's date is in `OGGI.md` when the system writes it. If the session does not 
 
 Architecture decisions live in `docs/adr/`. The vocabulary is in `GLOSSARY.md`.
 
+## Commands
+
+Run them from the vault root. Python 3.9 or later; on Windows write `py -3` in place of `python3`.
+
+| Command | What it does |
+|---|---|
+| `python3 scripts/verify` | Checks the vault rules (STATE, INDEX, links, README). Must print `OK` |
+| `python3 -m unittest discover -s scripts -p "test_*.py"` | Tests of the scripts, the dashboard and the hooks, about a minute |
+| `python3 -m unittest discover -s tests` | Tests of the wizard, the prerequisites check and the jobs |
+| `python3 doctor.py` | Says what is missing on this computer and how to install it |
+
+A commit that touches `scripts/` or `.claude/` runs the first two by itself, through `scripts/hooks/pre-commit`.
+
+## Where things are
+
+- `projects/`, `daily/`, `inbox/`, `radar/`, `content/`: the notes. This is where you write.
+- `memory/`, `docs/adr/` and this file: who the user is, the decisions, the rules. A change needs a yes.
+- `scripts/`: the routines, each with its `test_` file next to it. `scripts/dashboard/` is the local dashboard, `scripts/hooks/` the commit hook.
+- `.claude/`: commands, subagents, rules loaded by path, hooks and permissions.
+- `modules/` and the Python files at the root: the first-run wizard, the prerequisites check and the scheduled jobs. `tests/` holds their tests.
+- `templates/`, `scaffold/`: what a new project starts from.
+
 ## Writing rules
 
 - `STATE.md` is rewritten from scratch, never appended, and stays under about 20 lines.

@@ -75,6 +75,15 @@ class HtmlDashboard(unittest.TestCase):
         for pezzo in ("mappa-progetto", "/api/mappa/progetto", "/api/mappa/priorita", "Nuovo progetto", "Priorità del progetto", "Non per i progetti di lavoro", "n.tipo === 'progetto' && n.haCartella"):
             self.assertIn(pezzo, js, pezzo)
 
+    def test_harness_dalla_mappa(self):
+        js = (D / "mappa.js").read_text(encoding="utf-8")
+        for pezzo in ("/api/mappa/harness", "Adegua all\\'harness", "Non adeguare questo progetto", "Harness da decidere", "/ai-native-harness:audit",
+                      "harness-da-decidere", "n.tipo === 'progetto' && n.haCartella && n.harness", "decisione: "):
+            self.assertIn(pezzo, js, pezzo)
+        # il rifiuto si sceglie per esteso, e con un repo la scelta è obbligatoria anche nel dialogo del nuovo progetto
+        self.assertIn("conHarness && repo.value.trim() && !harness.value", js)
+        self.assertIn("harness-da-decidere", (D / "dashboard.css").read_text(encoding="utf-8"))
+
     def test_i_numeri_dei_nodi_si_spiegano_e_le_bozze_sono_in_sola_lettura(self):
         js = (D / "mappa.js").read_text(encoding="utf-8")
         css = (D / "dashboard.css").read_text(encoding="utf-8")

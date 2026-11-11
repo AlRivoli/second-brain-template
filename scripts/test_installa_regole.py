@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """scripts/installa-regole.py: copia l'hook delle regole in ~/.claude/hooks e lo registra, senza toccare il resto. Home temporanea."""
 import importlib.util
+import io
 import json
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parent / "installa-regole.py"
 _spec = importlib.util.spec_from_file_location("installa_regole", SCRIPT)
@@ -70,6 +72,20 @@ class Installa(unittest.TestCase):
         # un `python` nudo può essere l'alias dello Store: l'hook uscirebbe con 9009 e Claude Code lascerebbe passare tutto
         comando = ir._comando(self.home, "nt")
         self.assertTrue(comando.startswith('"%s" -I ' % sys.executable), comando)
+
+    def test_main_stampa_anche_su_una_console_cp1252(self):
+        # su Windows l'uscita in cp1252 non ha la freccia né ogni carattere dei percorsi: main moriva con UnicodeEncodeError prima di installare
+        home = self.home.with_name("home →")
+        try:
+            home.mkdir()
+        except (OSError, UnicodeError):
+            self.skipTest("il file system non accetta il nome di prova")
+        uscita = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        with mock.patch.object(ir, "SORGENTE", self.sorgente), mock.patch.object(ir.Path, "home", return_value=home), mock.patch.object(sys, "stdout", uscita):
+            self.assertEqual(ir.main(["--si"]), 0)
+        uscita.flush()
+        self.assertIn(b"PreToolUse", uscita.buffer.getvalue())
+        self.assertTrue(ir.controlla(self.sorgente, home))
 
     @unittest.skipIf(os.name == "nt", "i link simbolici su Windows chiedono privilegi")
     def test_settings_come_link_resta_un_link(self):

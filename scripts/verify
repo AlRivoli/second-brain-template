@@ -19,6 +19,9 @@ import sys
 
 MAX_STATE_LINES = 20  # righe non vuote
 PRIVATE_DIRS = {'lavoro', '_private'}  # cartelle riservate: non devono stare in INDEX
+ARCHIVE_DIR = '_archivio'  # projects/_archivio/<nome>: progetti archiviati dalla dashboard, fuori da INDEX
+# la cartella che la dashboard dà a un progetto archiviato: il nome, o il nome con la data (e un contatore) se era già preso
+ARCHIVED_NAME = re.compile(r'(.+?)(?:-\d{4}-\d{2}-\d{2}(?:-\d+)?)?')
 SKIP_DIRS = {'.git', '.obsidian', '.claude', '.superpowers', 'templates', 'template', 'node_modules'}  # template/: il vault di esempio, ha il suo verify
 # Link Obsidian; il pipe può essere escapato come \| dentro le tabelle.
 WIKILINK = re.compile(r'\[\[((?:\\\||[^\]])+)\]\]')
@@ -107,7 +110,8 @@ def check_projects(root, problems):
     folders = []
     if projects_dir.exists():
         folders = sorted(p.name for p in projects_dir.iterdir()
-                         if p.is_dir() and not p.name.startswith('.') and p.name.casefold() not in private_dirs)
+                         if p.is_dir() and not p.name.startswith('.') and p.name.casefold() not in private_dirs
+                         and p.name != ARCHIVE_DIR)
 
     for name in rows:
         if not (projects_dir / name).is_dir():
@@ -153,7 +157,14 @@ def check_wikilinks(root, problems):
             known.add(p.name.lower())
             known.add(p.stem.lower())
             if p.suffix == '.md':
-                known.add(p.relative_to(root).with_suffix('').as_posix().lower())
+                rel = p.relative_to(root).with_suffix('')
+                known.add(rel.as_posix().lower())
+                # una nota di un progetto archiviato tiene validi i link scritti quando stava in projects/<nome>/; anche il
+                # nome intero della cartella, perché un progetto può chiamarsi già con una data in fondo
+                parti = rel.parts
+                if len(parti) > 3 and parti[:2] == ('projects', ARCHIVE_DIR):
+                    for nome in {parti[2], ARCHIVED_NAME.fullmatch(parti[2]).group(1)}:
+                        known.add(pathlib.PurePosixPath('projects', nome, *parti[3:]).as_posix().lower())
     for path in root.rglob('*.md'):
         if is_skipped(path, root):
             continue

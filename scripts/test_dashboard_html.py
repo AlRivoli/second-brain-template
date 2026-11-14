@@ -64,11 +64,93 @@ class HtmlDashboard(unittest.TestCase):
     def test_azioni_sui_nodi_piu_per_i_vuoti_avvia_e_nuovo_task(self):
         js = (D / "mappa.js").read_text(encoding="utf-8")
         css = (D / "dashboard.css").read_text(encoding="utf-8")
-        for pezzo in ("mappa-nuovo", "/api/mappa/nuovo", "maxlength", "Aggiungi un task", "Avvia in Claude", "aperti(n) === 0", "haCartella"):
+        for pezzo in ("mappa-nuovo", "/api/mappa/nuovo", "maxlength", "Aggiungi un task", "Avvia in Claude", "haCartella"):
             self.assertIn(pezzo, js)
+        # the «+» is on every node that can take a task (user decision 2026-11-12), not only on the ones with nothing open
+        self.assertNotIn("aperti(n) === 0", js)
+        self.assertIn("if (puoAggiungere(n)) G.append(piu(n, pos.get(n.nome)));", js)
+        self.assertIn("...(puoAggiungere(n) ? [piu(n, p)] : [])", js)
+        self.assertIn("'aria-label': 'Aggiungi un task a ' + n.nome", js)
         self.assertIn("#mappa-nuovo", css)
         self.assertIn("textContent", js)                                # il testo dell'utente entra solo come testo
         self.assertNotIn("innerHTML", js)
+
+    def test_archivia_progetto_sempre_dietro_una_conferma(self):
+        js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")
+        corpo = js[js.index("function archivia(n)"):js.index("function decidiHarness")]
+        for atteso in ("inProva()", "/api/mappa/archivia", "showModal()", "annulla.focus()", "'Archivia'", "'Annulla'",
+                       "'Archiviare ' + n.nome + '? La riga sparisce da INDEX e la cartella va in projects/_archivio/' + n.nome + '. I task del piano restano.'"):
+            self.assertIn(atteso, corpo, atteso)
+        # offered only where the server could accept it, and never from the panel without the dialog
+        self.assertIn("NOME_PROGETTO.test(n.nome) ? h('div', 'riga-azioni azioni-progetto', [", js)
+        self.assertIn("bottone('Archivia progetto', '', () => archivia(n))", js)
+        self.assertEqual(js.count("/api/mappa/archivia"), 1)
+        self.assertIn("archivio: ", js[js.index("const ERRORI_409"):])
+        self.assertIn("#mappa-archivia", css)
+        # the dialog gives the focus back to a button the archive removed: it goes to the panel title instead of the page
+        self.assertIn("fuocoAlPannello()", corpo)
+        aiuto = js[js.index("function fuocoAlPannello"):js.index("\n  }", js.index("function fuocoAlPannello"))]
+        for atteso in ("'tabindex', '-1'", ".focus()"):
+            self.assertIn(atteso, aiuto, atteso)
+
+    def test_imposta_cartella_di_un_progetto_senza_repo(self):
+        js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")
+        corpo = js[js.index("function impostaCartella(n)"):js.index("function decidiHarness")]
+        for atteso in ("inProva()", "/api/mappa/cartella", "maxlength: '400'", "r.stato === 400", "CAMPO_NON_VALIDO[", "showModal()"):
+            self.assertIn(atteso, corpo, atteso)
+        self.assertNotIn("innerHTML", corpo)
+        # offered only on a project of the index whose STATE names no folder (the server's boolean), never on work projects
+        self.assertIn("n.senzaRepo ? bottone('Imposta cartella', '', () => impostaCartella(n)) : null", js)
+        self.assertIn("'ha-repo': ", js[js.index("const ERRORI_409"):])
+        self.assertIn("#mappa-cartella", css)
+
+    def test_le_animazioni_solo_per_un_cambio_voluto(self):
+        # motion only for a change the user caused: one WAAPI helper, ease-out, transform/opacity, nothing under reduced motion;
+        # no CSS keyframe on the satellites or the band, which would replay on every redraw (the first paint included)
+        js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")
+        corpo = lambda nome: js[js.index(nome):js.index("\n  }", js.index(nome))]
+        aiuto = corpo("function anima(")
+        self.assertIn("MOTO_RIDOTTO.matches", aiuto)
+        self.assertIn("cubic-bezier(0.23, 1, 0.32, 1)", js)
+        uscita = corpo("function esce(")
+        for atteso in ("cloneNode(true)", "removeAttribute('tabindex')", "'aria-hidden'", "MOTO_RIDOTTO.matches", ".remove()"):
+            self.assertIn(atteso, uscita, atteso)
+        self.assertRegex(css, r"\.uscita \{[^}]*pointer-events: none")
+        for vecchio in ("@keyframes entra", "@keyframes appare", ".sat-dentro { animation"):
+            self.assertNotIn(vecchio, css, vecchio)
+        # satellites fan in (staggered) and out, the band reveals and folds, the panel fades, the thread draws in
+        sat = corpo("function disegnaSatelliti")
+        self.assertIn("anima(dentro", sat); self.assertIn("esce(", sat)
+        self.assertIn("if (rivelato) anima(G", js)
+        self.assertIn("esce(", js[js.index("const premi = ()"):js.index("P.addEventListener('click', premi)")])
+        self.assertIn("strokeDashoffset", corpo("function filo"))
+        self.assertIn("anima($('mappa-dettaglio')", corpo("function pannello"))
+        self.assertIn("G.addEventListener('pointerenter', () => apri(n.nome, false, true));", js)
+        self.assertIn("anima(G.querySelector('.alone')", js)   # the ring of the node a click fixes
+        # opening a node from keyboard focus never animates: only the pointer passes `anima`
+        self.assertIn("G.addEventListener('focus', () => { if (G.matches(':focus-visible')) portaInVista(n.nome); apri(n.nome); });", js)
+        self.assertRegex(css, r"prefers-reduced-motion[^}]*\.obiettivo\.rivelato")
+
+    def test_il_nodo_scelto_si_inquadra_e_si_torna_indietro(self):
+        js = (D / "mappa.js").read_text(encoding="utf-8")
+        corpo = lambda nome: js[js.index(nome):js.index("\n  }", js.index(nome))]
+        self.assertIn("inquadra(nome)", corpo("function scegli(nome)"))
+        for nome in ("function deseleziona", "function scegliObiettivo"):
+            self.assertIn("torna()", corpo(nome), nome)
+        # the flight: requestAnimationFrame, a jump under reduced motion, never on the narrow list, inside the zoom limits
+        self.assertIn("requestAnimationFrame(passo)", corpo("function vola"))
+        self.assertIn("MOTO_RIDOTTO.matches", corpo("function vola"))
+        self.assertIn("prefers-reduced-motion: reduce", js)
+        inq = corpo("function inquadra")
+        for atteso in ("svg.clientWidth < 2", "K_MIN", "K_MAX", "vola(limita("):
+            self.assertIn(atteso, inq, atteso)
+        # every user gesture stops a flight where it is
+        for nome in ("function zoomA", "function sposta", "function adatta", "function portaInVista"):
+            self.assertIn("cancelAnimationFrame(volo)", js[js.index(nome):js.index(nome) + 160], nome)   # the first line of the body
+        # on the narrow list the map is hidden: the view goes back as it was, no flight over a zero-width svg
+        tor = corpo("function torna")
+        self.assertIn("clientWidth < 2", tor)
+        self.assertIn("vista = ritorno", tor)
 
     def test_nuovo_progetto_e_priorita_dalla_mappa(self):
         js = (D / "mappa.js").read_text(encoding="utf-8")
@@ -119,6 +201,49 @@ class HtmlDashboard(unittest.TestCase):
         js = (D / "mappa.js").read_text(encoding="utf-8")
         for atteso in ("stesso repo di un task in corso", "repo sconosciuto", "repo non indicato", "scegli_repo", "name: 'repo'", "Repo: "):
             self.assertIn(atteso, js)
+
+    def test_avvia_spiega_i_repo_gemelli(self):
+        # twin short names: without a valid repo: the server refuses (409 cartella), so the dialog says why and offers no choice
+        js = (D / "mappa.js").read_text(encoding="utf-8")
+        corpo = js[js.index("function conferma"):js.index("// ---- struttura fissa")]
+        self.assertIn("Due repo di questo progetto hanno lo stesso nome (", corpo)
+        self.assertIn("rinomina una delle cartelle o togli una riga Repo dallo STATE.", corpo)
+        self.assertIn("n.repoDoppi", corpo)
+        self.assertIn("doppi.length", corpo[corpo.index("avvia.disabled ="):])
+
+    def test_le_etichette_tagliate_hanno_il_nome_intero(self):
+        # a cut repo name keeps the whole one in the tooltip and for screen readers; the SVG label gets a <title> child
+        js = (D / "mappa.js").read_text(encoding="utf-8")
+        aiuto = js[js.index("function tagliata"):js.index("\n  }\n", js.index("function tagliata"))]
+        for atteso in ("title", "'aria-hidden'", "solo-lettori"):
+            self.assertIn(atteso, aiuto, atteso)
+        self.assertIn("tagliata(r, 24)", js[js.index("function segniRepo"):js.index("// ---- dati di prova")])
+        self.assertIn("tagliata(r, 24)", js[js.index("function filtroPerRepo"):js.index("function dettaglioNodo")])
+        self.assertIn("s('title', {}, ['repo: ' + repo.join(', ')])", js)
+
+    def test_il_task_porta_al_suo_obiettivo(self):
+        # a goal folded behind a pill is reachable from its task rows: a native button, so Enter and Space work
+        js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")
+        aiuto = js[js.index("function segnoObiettivo"):js.index("\n  }\n", js.index("function segnoObiettivo"))]
+        for atteso in ("bottone(", "'obiettivo: '", "scegliObiettivo(o.slug)", "obiettiviSvg.get(o.slug)", ".focus()", "isConnected", "fuocoAlPannello()"):
+            self.assertIn(atteso, aiuto, atteso)
+        for riga in ("function rigaTask", "function rigaLista"):
+            corpo = js[js.index(riga):js.index("\n  }\n", js.index(riga))]
+            self.assertIn("conNodo ? null : segnoObiettivo(t)", corpo, riga)
+        self.assertIn(".chip-obiettivo", css)
+        # under «Progetti»/«Argomenti» the band is not drawn: the chip switches the filter first, through the one filter helper
+        self.assertIn("impostaFiltro('tutto')", aiuto)
+        self.assertIn("impostaFiltro(k)", js[js.index("function struttura"):])
+        # a long title and its marks: the marks wrap under it as a block, never the title letter by letter
+        self.assertRegex(css, r"\.task-testo \{[^}]*flex-wrap: wrap")
+
+    def test_la_riga_della_scadenza_sta_nel_riquadro(self):
+        # «scade … · a rischio» too long for a narrow box: measured before the band is laid out, the state word goes on a line of its own
+        js = (D / "mappa.js").read_text(encoding="utf-8")
+        corpo = js[js.index("function disegna()"):js.index("function evidenziaObiettivo")]
+        self.assertIn("getComputedTextLength()", corpo)
+        self.assertIn("lunghi.has(o)", corpo)
+        self.assertLess(corpo.index("getComputedTextLength()"), corpo.index("for (const o of layout("))   # before the nodes are placed
 
     def test_la_mappa_mostra_scadenze_rischio_e_fascia_comprimibile(self):
         js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")

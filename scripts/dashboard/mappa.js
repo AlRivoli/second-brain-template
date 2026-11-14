@@ -68,8 +68,8 @@
     const quanti = st => delNodo(n).filter(t => statoVisivo(t) === st).length, p = pronti(n), c = quanti('in_corso'), a = quanti('in_attesa');
     return [p + (p === 1 ? ' pronto' : ' pronti'), c ? c + ' in corso' : '', a ? a + ' in attesa' : ''].filter(Boolean).join(' · ') + bozze;
   }
-  const haPiu = n => aperti(n) === 0 && puoAggiungere(n);   // nodo senza task da fare: un «+» per scriverne uno
-  // Il «+» sta due volte: sul nodo, e sopra la zona dei satelliti quando il nodo è aperto (la zona copre il bordo del disco).
+  // Every node that can take a task has a «+», at the top right of the disc (clear of the count in the middle), twice:
+  // on the node, and above the satellite zone when the node is open (the zone covers the edge of the disc).
   function piu(n, p) {
     const A = s('g', { class: 'azione', transform: `translate(${(p.x + p.r * 0.78).toFixed(1)} ${(p.y - p.r * 0.78).toFixed(1)})`, tabindex: 0, role: 'button', 'aria-label': 'Aggiungi un task a ' + n.nome });
     A.append(s('title', {}, ['Aggiungi un task']), s('g', { class: 'azione-dentro' }, [s('circle', { r: 12 }), s('text', { dy: '0.35em' }, ['+'])]));
@@ -92,6 +92,13 @@
     if (testo.length <= max) return testo;
     const t = testo.slice(0, max), i = t.lastIndexOf(' ');
     return (i > max / 2 ? t.slice(0, i) : t).replace(/[\s,;:.]+$/, '') + '…';
+  }
+  // A label cut to `max` keeps its whole text in the tooltip and for screen readers: a plain span has no accessible name of its
+  // own (aria-label is not read there), so the cut text is hidden from them and the whole one is read instead. Uncut: the text.
+  function tagliata(testo, max) {
+    const corto = taglia(testo, max);
+    if (corto === testo) return testo;
+    return h('span', '', [h('span', '', [corto], { 'aria-hidden': 'true' }), h('span', 'solo-lettori', [testo])], { title: testo });
   }
   function giornoBreve(iso) {
     return new Date(iso + 'T12:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'short' }).replace('.', '');
@@ -139,11 +146,28 @@
   function segniRepo(t, filtrato) {
     const nomi = [...new Set(t.repo || [])], ignoti = t.repoIgnoti || [];
     return [
-      nomi.length ? h('span', 'repo-elenco', ['repo', ...nomi.map(r => h('span', 'repo', [taglia(r, 24)]))]) : null,
-      ...ignoti.map(r => h('span', 'sub motivo', ['repo sconosciuto: ' + taglia(r, 24)])),
+      nomi.length ? h('span', 'repo-elenco', ['repo', ...nomi.map(r => h('span', 'repo', [tagliata(r, 24)]))]) : null,
+      ...ignoti.map(r => h('span', 'sub motivo', ['repo sconosciuto: ', tagliata(r, 24)])),
       (t.stessoRepo || []).length ? h('span', 'stato attenzione avviso-repo', ['stesso repo di un task in corso']) : null,
       filtrato && !nomi.length && !ignoti.length && !t.bozza ? h('span', 'sub', ['repo non indicato']) : null,
     ];
+  }
+  // A task's goal as a button in its row, the same in the panel and in the list: it fixes the goal, which the band then shows
+  // even if a pill had folded it, and opens its panel. The panel redraw drops the pressed button, so the focus moves to the
+  // goal's box; with no box drawn (narrow screen, a filter without goals) the panel comes into view instead.
+  function segnoObiettivo(t) {
+    const o = t.obiettivo && obiettivoPer(PREFISSO_OBIETTIVO + t.obiettivo);
+    if (!o) return null;
+    // one span: as separate flex items of the button, the space after «obiettivo:» would collapse
+    const b = bottone(h('span', '', ['obiettivo: ', tagliata(o.titolo, 24)]), 'chip-obiettivo', () => {
+      if (!obiettiviVisibili().includes(o)) impostaFiltro('tutto');   // «Progetti»/«Argomenti» draw no band to reveal it in
+      scegliObiettivo(o.slug);
+      const box = obiettiviSvg.get(o.slug);
+      if (box) box.G.focus();
+      else if (!b.isConnected) fuocoAlPannello();   // the redraw took the pressed chip away: never leave the focus on the page
+      else $('mappa-dettaglio').scrollIntoView({ block: 'nearest' });
+    });
+    return b;
   }
 
   // ---- dati di prova (?prova=vuoto o ?prova=pieno): servono solo a verificare l'aspetto ----
@@ -265,20 +289,78 @@
     m.setAttribute('transform', `translate(${vista.x.toFixed(1)} ${vista.y.toFixed(1)}) scale(${vista.k.toFixed(3)})`);
     $('mappa-svg').style.setProperty('--k', vista.k.toFixed(3));
   }
-  function limita() {       // lascia sempre almeno 80px di mappa in vista
+  function limita(v = vista) {       // lascia sempre almeno 80px di mappa in vista
     const svg = $('mappa-svg'), W = svg.clientWidth, H = svg.clientHeight, m = 80;
-    vista.x = Math.max(m - W * vista.k, Math.min(W - m, vista.x));
-    vista.y = Math.max(m - H * vista.k, Math.min(H - m, vista.y));
+    v.x = Math.max(m - W * v.k, Math.min(W - m, v.x));
+    v.y = Math.max(m - H * v.k, Math.min(H - m, v.y));
+    return v;
   }
   function zoomA(fattore, cx, cy) {   // cx, cy: punto fermo, in pixel dell'SVG
+    cancelAnimationFrame(volo);
     const k = Math.max(K_MIN, Math.min(K_MAX, vista.k * fattore)), f = k / vista.k;
     vista = { k, x: cx - (cx - vista.x) * f, y: cy - (cy - vista.y) * f };
     limita(); applicaVista();
   }
-  function sposta(dx, dy) { vista.x += dx; vista.y += dy; limita(); applicaVista(); }
-  function adatta() { vista = { k: 1, x: 0, y: 0 }; applicaVista(); }
+  function sposta(dx, dy) { cancelAnimationFrame(volo); vista.x += dx; vista.y += dy; limita(); applicaVista(); }
+  function adatta() { cancelAnimationFrame(volo); ritorno = null; vista = { k: 1, x: 0, y: 0 }; applicaVista(); }   // the view you chose: deselecting stays here
   function zoomCentro(fattore) { const svg = $('mappa-svg'); zoomA(fattore, svg.clientWidth / 2, svg.clientHeight / 2); }
+  // A fixed node is framed: the view flies so the node and its satellites sit in the middle; unfixing flies back to the view
+  // from before. A user gesture (wheel, drag, pinch, + − 0, «Adatta») stops a flight where it is. Reduced motion: a jump.
+  const MOTO_RIDOTTO = window.matchMedia('(prefers-reduced-motion: reduce)');
+  let volo = 0, ritorno = null;   // the running flight (rAF id) and the view to fly back to, null when nothing was framed
+  function vola(meta) {
+    cancelAnimationFrame(volo);
+    if (MOTO_RIDOTTO.matches) { vista = meta; applicaVista(); return; }
+    const da = { ...vista }, t0 = performance.now(), DURATA = 300;
+    const passo = ora => {
+      const t = Math.min(1, (ora - t0) / DURATA), e = 1 - Math.pow(1 - t, 5);   // ease-out quint: a strong ease-out, in closed form
+      vista = { k: da.k + (meta.k - da.k) * e, x: da.x + (meta.x - da.x) * e, y: da.y + (meta.y - da.y) * e };
+      applicaVista();
+      if (t < 1) volo = requestAnimationFrame(passo);
+    };
+    volo = requestAnimationFrame(passo);
+  }
+  function inquadra(nome) {
+    const svg = $('mappa-svg'), p = pos.get(nome);
+    if (!p || svg.clientWidth < 2) return;   // under 760px the list replaces the map: nothing to zoom
+    if (!ritorno) ritorno = { ...vista };
+    // the node with its name below and its satellites (drawn by apri just before), in world units
+    const b = $('mappa-satelliti').getBBox(), con = b.width > 0;
+    const x0 = Math.min(con ? b.x : Infinity, p.x - p.r - 9), x1 = Math.max(con ? b.x + b.width : -Infinity, p.x + p.r + 9);
+    const y0 = Math.min(con ? b.y : Infinity, p.y - p.r - 9), y1 = Math.max(con ? b.y + b.height : -Infinity, p.y + p.r + 60);
+    const testa = document.querySelector('.mappa-testa'), su = 26 + (testa ? testa.offsetHeight : 36), giu = 44;   // header and legend
+    const W = svg.clientWidth, H = svg.clientHeight;
+    // the text keeps its size on screen at any zoom, so up to 1.5 the satellites only spread out
+    const k = Math.max(K_MIN, Math.min(K_MAX, 1.5, 0.9 * W / (x1 - x0), 0.9 * (H - su - giu) / (y1 - y0)));
+    vola(limita({ k, x: W / 2 - (x0 + x1) / 2 * k, y: (su + H - giu) / 2 - (y0 + y1) / 2 * k }));
+  }
+  function torna() {
+    // on the narrow list the map is hidden (no size to fit or fly in): the view simply goes back as it was
+    if (ritorno) { if ($('mappa-svg').clientWidth < 2) vista = ritorno; else vola(limita(ritorno)); }
+    ritorno = null;
+  }
+  // Motion only for a change the user just caused: WAAPI, called from the handlers, so a redraw (the first paint included)
+  // never replays it. transform and opacity only (the thread's dash too), a strong ease-out, nothing under reduced motion.
+  const EASE_OUT = 'cubic-bezier(0.23, 1, 0.32, 1)';
+  function anima(el, fotogrammi, ms, ritardo) {
+    if (el && el.animate && !MOTO_RIDOTTO.matches) el.animate(fotogrammi, { duration: ms, delay: ritardo || 0, easing: EASE_OUT, fill: 'backwards' });
+  }
+  // What leaves fades out where it was, faster than it came: a copy, never the live elements, which keep their listeners and
+  // can hold the focus. The copy is hidden from screen readers, out of the tab order and of the pointer, then removed.
+  function esce(nodi, prima) {
+    if (MOTO_RIDOTTO.matches || !nodi.length || !prima || !prima.parentNode) return;
+    const g = s('g', { class: 'uscita', 'aria-hidden': 'true' });
+    for (const n of nodi) {
+      const c = n.cloneNode(true);
+      for (const x of [c, ...c.querySelectorAll('[tabindex]')]) x.removeAttribute('tabindex');
+      g.appendChild(c);
+    }
+    prima.parentNode.insertBefore(g, prima);
+    const a = g.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 120, easing: EASE_OUT, fill: 'forwards' });
+    a.finished.then(() => g.remove(), () => g.remove());
+  }
   function portaInVista(nome) {       // un nodo che prende il fuoco fuori dal riquadro viene portato al centro
+    cancelAnimationFrame(volo);
     const p = pos.get(nome), svg = $('mappa-svg');
     if (!p) return;
     const x = p.x * vista.k + vista.x, y = p.y * vista.k + vista.y, W = svg.clientWidth, H = svg.clientHeight;
@@ -353,7 +435,8 @@
     const pieghe = [['altri', aperti.length > posto ? aperti.slice(posto - 1) : []], ['completati', finiti]];   // «+k altri» takes a slot too
     const nascosti = new Set(pieghe.flatMap(([g, os]) => banda[g] ? [] : os.filter(o => o !== scelto)));
     const nuovi = new Set(pieghe.flatMap(([g, os]) => g === rivela ? os : []));
-    const mostra = os => os.filter(o => !nascosti.has(o)).map(o => ({ o, rivelato: nuovi.has(o) }));
+    const piegaDi = new Map(pieghe.flatMap(([g, os]) => os.filter(o => o !== scelto).map(o => [o, g])));   // what each pill would fold away
+    const mostra = os => os.filter(o => !nascosti.has(o)).map(o => ({ o, rivelato: nuovi.has(o), piega: piegaDi.get(o) }));
     // an open group keeps its pill to close it; a folded one shows it only if it hides something
     const pastiglia = ([g, os]) => os.length && (banda[g] || os.some(o => nascosti.has(o))) ? [{ pastiglia: g, k: os.filter(o => nascosti.has(o)).length }] : [];
     return [...mostra(aperti), ...pastiglia(pieghe[0]), ...mostra(finiti), ...pastiglia(pieghe[1])];
@@ -367,7 +450,7 @@
     dimensione = W + 'x' + H;
     nodiSvg = new Map(); pos = new Map(); obiettiviSvg = new Map();
     const sfondo = s('rect', { class: 'mappa-sfondo', x: 0, y: 0, width: W, height: H });
-    sfondo.addEventListener('pointerenter', () => { if (!fuocoNeiSatelliti()) apri(fissato); });
+    sfondo.addEventListener('pointerenter', () => { if (!fuocoNeiSatelliti()) apri(fissato, false, true); });
     sfondo.addEventListener('click', () => { if (!trascinato) deseleziona(); });
     // arrowhead of the dependency thread: a marker, so the path stays one element
     const freccia = s('marker', { id: 'mappa-freccia', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto' }, [s('path', { d: 'M0 0L10 5L0 10z' })]);
@@ -383,9 +466,20 @@
     const colonne = Math.max(1, Math.floor((W - 40 + OB.gap) / (OB.min + OB.gap))), obiettivi = fascia(colonne), k = Math.min(obiettivi.length, colonne);
     OB.h = obiettivi.some(v => v.o && v.o.scadenza) ? 74 : 58;
     const largo = k ? Math.min(OB.max, (W - 40 - (k - 1) * OB.gap) / k) : 0, x0 = (W - k * largo - (k - 1) * OB.gap) / 2;
-    const fondoFascia = y0 + Math.ceil(obiettivi.length / colonne) * (OB.h + OB.gap) - OB.gap;
     const strato = s('g', { id: 'mappa-obiettivi' });   // first child of the world: the goal lines run under the nodes
     mondo.appendChild(strato);
+    // «scade <giorno> · a rischio» wider than its box: the state word goes on a line of its own and only that box grows by it;
+    // the row pitch grows too, so no box reaches the row below. Measured on a probe in the live SVG before anything is placed,
+    // since the width depends on the font and the nodes are laid out below the band. O(G) measures.
+    const sonda = s('text', { class: 'obiettivo-sub' });
+    strato.appendChild(sonda);
+    const lunghi = new Set(obiettivi.filter(({ o }) => o && scade(o) && rischio(o)).filter(({ o }) => {
+      sonda.replaceChildren(scade(o), s('tspan', { class: 'obiettivo-rischio' }, [' · ' + rischio(o)]));
+      return sonda.getComputedTextLength() > largo - 24;
+    }).map(({ o }) => o));
+    sonda.remove();
+    const RIGA = 16, passo = OB.h + (lunghi.size ? RIGA : 0) + OB.gap;
+    const fondoFascia = y0 + Math.ceil(obiettivi.length / colonne) * passo - OB.gap;
     if (filtro === 'obiettivi' && !obiettiviDi().length) mondo.appendChild(s('text', { class: 'mappa-vuota', x: W / 2, y: H / 2 }, [NESSUN_OBIETTIVO]));
     // 70 is the room the layout already keeps for the header; past the band, 24 more for the halo
     for (const o of layout(visibili(), W, H, obiettivi.length ? fondoFascia + 24 - 70 : 0)) {
@@ -413,11 +507,11 @@
         s('text', { class: 'nome', x, y: y + r, dy: '1.55em' }, [taglia(n.nome, 22)]),
         s('text', { class: 'tipo', x, y: y + r, dy: '3.2em' }, [n.tipo === 'senza' ? 'da etichettare' : n.tipo]));
       // a node with more than one repo names them: three at most, the rest as «+k» (all of them are in the tooltip)
-      if (repo.length > 1) G.append(s('text', { class: 'repo-nodo', x, y: y + r, dy: '4.8em' }, [repo.slice(0, 3).map(nomeRepo => taglia(nomeRepo, 14)).join(' · ') + (repo.length > 3 ? ' +' + (repo.length - 3) : '')]));
-      if (haPiu(n)) G.append(piu(n, pos.get(n.nome)));
-      G.addEventListener('pointerenter', () => apri(n.nome));
+      if (repo.length > 1) G.append(s('text', { class: 'repo-nodo', x, y: y + r, dy: '4.8em' }, [s('title', {}, ['repo: ' + repo.join(', ')]), repo.slice(0, 3).map(nomeRepo => taglia(nomeRepo, 14)).join(' · ') + (repo.length > 3 ? ' +' + (repo.length - 3) : '')]));
+      if (puoAggiungere(n)) G.append(piu(n, pos.get(n.nome)));
+      G.addEventListener('pointerenter', () => apri(n.nome, false, true));
       G.addEventListener('focus', () => { if (G.matches(':focus-visible')) portaInVista(n.nome); apri(n.nome); });   // solo dalla tastiera: al clic il nodo si sposterebbe sotto il puntatore
-      G.addEventListener('click', () => scegli(n.nome));
+      G.addEventListener('click', () => { scegli(n.nome); anima(G.querySelector('.alone'), [{ opacity: 0, transform: 'scale(.94)' }, { transform: 'none' }], 250); });   // the ring of the node just fixed
       G.addEventListener('keydown', e => {
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); scegli(n.nome); }
         if (e.key === 'Enter' || e.key === 'ArrowRight') { e.preventDefault(); apri(n.nome); const primo = document.querySelector('#mappa-satelliti .sat[tabindex]'); if (primo) primo.focus(); }
@@ -426,8 +520,10 @@
       mondo.appendChild(G);
     }
     const linee = [], scatole = [];
-    obiettivi.forEach(({ o, rivelato, pastiglia, k: piegati }, i) => {
-      const x = x0 + (i % colonne) * (largo + OB.gap), y = y0 + Math.floor(i / colonne) * (OB.h + OB.gap), ax = x + largo / 2, ay = y + OB.h;
+    let nRivelati = 0;
+    obiettivi.forEach(({ o, rivelato, piega, pastiglia, k: piegati }, i) => {
+      const lungo = lunghi.has(o), alto = OB.h + (lungo ? RIGA : 0);
+      const x = x0 + (i % colonne) * (largo + OB.gap), y = y0 + Math.floor(i / colonne) * passo, ax = x + largo / 2, ay = y + alto;
       if (pastiglia) {   // «+k altri» / «+k completati»: a button that opens its group, and closes it again
         const aperta = banda[pastiglia], uno = !aperta && piegati === 1;   // «+1 altro», «+1 completato»: singular for one
         const testo = aperta ? (pastiglia === 'altri' ? 'nascondi gli altri' : 'nascondi i completati') : '+' + piegati + (pastiglia === 'altri' ? (uno ? ' altro' : ' altri') : (uno ? ' completato' : ' completati'));
@@ -436,10 +532,12 @@
         P.append(s('title', {}, [aperta ? testo : 'mostra ' + testo.slice(1)]), s('rect', { class: 'pastiglia-box', x, y: y + (OB.h - 32) / 2, width: largo, height: 32, rx: 16 }),
           s('text', { class: 'pastiglia-testo', x: ax, y: y + OB.h / 2, dy: '0.35em' }, [testo]));
         const premi = () => {
+          const via = aperta ? [...document.querySelectorAll('#mappa-obiettivi [data-piega="' + pastiglia + '"]')] : [];   // what this press folds away
           banda[pastiglia] = !aperta; rivela = aperta ? null : pastiglia;
           disegna();
+          esce(via, $('mappa-dipendenze'));   // the folded goals fade out where they were, over the new band
           const nuova = document.querySelector('#mappa-obiettivi [data-pastiglia="' + pastiglia + '"]');   // the redraw replaced the pressed pill
-          if (nuova) nuova.focus();
+          if (nuova) { nuova.focus(); anima(nuova.querySelector('.pastiglia-box'), [{ transform: 'scale(.97)' }, { transform: 'none' }], 150); }
         };
         P.addEventListener('click', premi);
         P.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); premi(); } });
@@ -454,8 +552,9 @@
       const scadenza = scade(o), stato = rischio(o);
       const etichetta = o.titolo + ', obiettivo: ' + contoObiettivo(o) + (o.definito ? '' : ', non definito') + (scadenza ? ', ' + scadenza : '') + (stato ? ', ' + stato : '');
       const G = s('g', { class: 'obiettivo' + (o.definito ? '' : ' non-definito') + (stato === 'scaduto' ? ' scaduto' : stato ? ' a-rischio' : '') + (rivelato ? ' rivelato' : ''),
-        tabindex: 0, role: 'button', 'aria-label': etichetta });
-      G.append(s('title', {}, [etichetta]), s('rect', { class: 'obiettivo-box', x, y, width: largo, height: OB.h, rx: 10 }),
+        tabindex: 0, role: 'button', 'aria-label': etichetta, ...(piega ? { 'data-piega': piega } : {}) });
+      if (rivelato) anima(G, [{ opacity: 0, transform: 'translateY(-6px)' }, { transform: 'none' }], 200, Math.min(nRivelati++, 6) * 30);   // a pill just opened them
+      G.append(s('title', {}, [etichetta]), s('rect', { class: 'obiettivo-box', x, y, width: largo, height: alto, rx: 10 }),
         s('text', { class: 'obiettivo-titolo', x: x + 12, y: y + 21 }, [taglia(o.titolo, Math.floor((largo - 24) / 6.3))]));
       // progress: done, in progress, ready, waiting, with the strokes of the node rings (waiting dashed); the line below says it in words
       const bx = x + 12, bw = largo - 24, by = y + 33;
@@ -469,14 +568,15 @@
       }
       G.append(s('text', { class: 'obiettivo-sub', x: x + 12, y: y + 50 }, [(o.definito ? '' : 'non definito · ') + (tot ? c.fatti + ' di ' + tot + ' fatti' : 'nessun passo')]));
       // the risk is a word in bold next to the date, and the outline changes too: never colour alone
-      if (scadenza) G.append(s('text', { class: 'obiettivo-sub', x: x + 12, y: y + 66 }, [scadenza, ...(stato ? [s('tspan', { class: 'obiettivo-rischio' }, [' · ' + stato])] : [])]));
+      if (scadenza) G.append(s('text', { class: 'obiettivo-sub', x: x + 12, y: y + 66 }, [scadenza, ...(stato && !lungo ? [s('tspan', { class: 'obiettivo-rischio' }, [' · ' + stato])] : [])]));
+      if (lungo) G.append(s('text', { class: 'obiettivo-sub', x: x + 12, y: y + 66 + RIGA }, [s('tspan', { class: 'obiettivo-rischio' }, [stato])]));
       G.addEventListener('click', () => scegliObiettivo(o.slug));
       G.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); scegliObiettivo(o.slug); } });
       obiettiviSvg.set(o.slug, { G, linee: sue });
       linee.push(...sue); scatole.push(G);
     });
     strato.append(...linee, ...scatole);
-    rivela = null;   // the fade-in plays once, not on every redraw
+    rivela = null;   // the reveal plays once, not on every redraw
     mondo.appendChild(s('g', { id: 'mappa-dipendenze' }));  // the thread of the selected waiting task, under the satellites
     mondo.appendChild(s('g', { id: 'mappa-satelliti' }));   // sempre ultimo: sta sopra tutti i nodi
     limita(); applicaVista();
@@ -495,7 +595,7 @@
       G.classList.toggle('scelto', su);
       linee.forEach(l => l.classList.toggle('scelta', su));
     }
-    for (const [nome, G] of nodiSvg) G.classList.toggle('coinvolto', !!o && o.progetti.includes(nome));
+    for (const [nome, G] of nodiSvg) { G.classList.toggle('coinvolto', !!o && o.progetti.includes(nome)); G.classList.toggle('fissato', nome === fissato); }
   }
 
   // satelliti del nodo aperto: tutti gli aperti, gli ultimi 2 fatti (in ordine di file) e «+k fatti»
@@ -528,13 +628,16 @@
     for (const o of out) { o.y += sposta; o.x = Math.max(16, Math.min(W - 16, o.x)); o.spazio = o.lato > 0 ? W - 8 - o.x - 13 : o.x - 8 - 13; }
     return out;
   }
-  function disegnaSatelliti(nome) {
+  // `conMoto`: opened by the pointer, so the old satellites fade out and the new ones fan out of the node, staggered.
+  // Never from keyboard focus or a redraw: moving through nodes with Tab, or a refresh, must not keep animating.
+  function disegnaSatelliti(nome, conMoto) {
     const strato = $('mappa-satelliti'), n = nodoPer(nome), p = pos.get(nome);
     if (!strato) return;
+    if (conMoto) esce([...strato.querySelectorAll(':scope > .sat, :scope > .filo')], strato);
     if (!n || !p) { strato.replaceChildren(); return; }
     const lista = voci(n), svg = $('mappa-svg');
     const posiz = posizioni(lista.length, p, svg.clientWidth, svg.clientHeight);
-    const fili = [], sat = [], zona = s('g', { class: 'zona' });
+    const fili = [], sat = [], entrate = [], zona = s('g', { class: 'zona' });
     const R0 = p.r + 14;
     zona.append(s('path', { 'fill-rule': 'evenodd', d: `M${p.x - R0} ${p.y}a${R0} ${R0} 0 1 0 ${2 * R0} 0a${R0} ${R0} 0 1 0 ${-2 * R0} 0M${p.x - p.r + 1} ${p.y}a${p.r - 1} ${p.r - 1} 0 1 0 ${2 * p.r - 2} 0a${p.r - 1} ${p.r - 1} 0 1 0 ${-2 * p.r + 2} 0` }));
     lista.forEach((v, i) => {
@@ -548,6 +651,7 @@
       dentro.append(s('circle', { class: 'sat-punto', r: v.t ? 7 : 5 }),
         s('text', { dx: (q.lato * 1.1) + 'em', dy: '0.33em', 'text-anchor': q.lato > 0 ? 'start' : 'end' }, [etichetta]));
       G.append(s('title', {}, [[testo, ...perche].join('\n')]), dentro);
+      entrate.push([dentro, (p.x - q.x) / d * 10, (p.y - q.y) / d * 10]);   // starts 10px towards its node
       if (v.t) {
         G.setAttribute('tabindex', 0); G.setAttribute('role', 'button'); G.setAttribute('aria-label', [testo, NOME_VISIVO[v.stato], ...perche].join(', '));
         if (v.t.id) G.setAttribute('data-id', v.t.id);   // the thread finds a blocker in the same node by id
@@ -561,12 +665,17 @@
       }
       sat.push(G);
     });
-    strato.replaceChildren(zona, ...fili, ...sat, ...(haPiu(n) ? [piu(n, p)] : []));   // la zona trasparente tiene aperto il nodo finché il puntatore va verso i satelliti
+    strato.replaceChildren(zona, ...fili, ...sat, ...(puoAggiungere(n) ? [piu(n, p)] : []));   // la zona trasparente tiene aperto il nodo finché il puntatore va verso i satelliti
+    if (conMoto) {
+      fili.forEach(f => anima(f, [{ opacity: 0 }, { opacity: 1 }], 150));
+      entrate.forEach(([dentro, ux, uy], i) => anima(dentro, [{ opacity: 0, transform: `translate(${ux.toFixed(1)}px, ${uy.toFixed(1)}px) scale(.95)` }, { opacity: 1, transform: 'none' }], 150, Math.min(i, 6) * 30));
+    }
     filo();
   }
 
   // Thread of the selected waiting task: an arrow from every other node it waits on, and `bloccante` on the blockers
   // in its own node. Never all threads at once. Redrawn from scratch on every selection change and redraw: O(blockers).
+  let ultimoFilo = '';
   function filo() {
     for (const el of document.querySelectorAll('#mappa-svg .bloccante')) el.classList.remove('bloccante');
     const strato = $('mappa-dipendenze');
@@ -574,6 +683,8 @@
     strato.replaceChildren();
     const n = selezione && nodoPer(fissato), t = n && n.task.find(x => x.testo === selezione.testo && x.data === selezione.data);
     const q = t && statoVisivo(t) !== 'fatto' && pos.get(n.nome);
+    const chiave = q ? t.testo + ' | ' + t.data : '', nuovo = chiave !== ultimoFilo;   // draws in only for a newly selected task
+    ultimoFilo = chiave;
     if (!q) return;
     const sat = aperto === n.nome ? [...document.querySelectorAll('#mappa-satelliti .sat[data-id]')] : [];
     const altri = new Set();
@@ -588,24 +699,26 @@
       nodiSvg.get(nome).classList.add('bloccante');
       const dx = q.x - p.x, dy = q.y - p.y, cx = (p.x + q.x) / 2 - dy * 0.2, cy = (p.y + q.y) / 2 + dx * 0.2;   // a gentle bend
       const bordo = (o, r) => { const ex = cx - o.x, ey = cy - o.y, e = Math.hypot(ex, ey) || 1; return (o.x + ex / e * r).toFixed(1) + ' ' + (o.y + ey / e * r).toFixed(1); };
-      strato.append(s('path', { class: 'dipendenza', d: `M${bordo(p, p.r + 6)}Q${cx.toFixed(1)} ${cy.toFixed(1)} ${bordo(q, q.r + 10)}`, 'marker-end': 'url(#mappa-freccia)' }));
+      const traccia = s('path', { class: 'dipendenza', d: `M${bordo(p, p.r + 6)}Q${cx.toFixed(1)} ${cy.toFixed(1)} ${bordo(q, q.r + 10)}`, 'marker-end': 'url(#mappa-freccia)' });
+      strato.append(traccia);
+      if (nuovo) { const L = traccia.getTotalLength(); anima(traccia, [{ strokeDasharray: L, strokeDashoffset: L, opacity: 0 }, { strokeDasharray: L, strokeDashoffset: 0, opacity: 1 }], 250); }
     }
   }
 
   const fuocoNeiSatelliti = () => { const e = document.activeElement; return !!(e && e.closest && e.closest('#mappa-satelliti')); };
 
   // un solo nodo aperto: aprirne uno chiude il precedente; i satelliti si disegnano una volta sola
-  function apri(nome, forza) {
+  function apri(nome, forza, conMoto) {
     if (!forza && aperto === nome) return;
     if (aperto && nodiSvg.has(aperto)) nodiSvg.get(aperto).classList.remove('aperto');
     aperto = nodiSvg.has(nome) ? nome : null;
     $('mappa-svg').classList.toggle('focus', !!aperto);
     if (aperto) nodiSvg.get(aperto).classList.add('aperto');
-    disegnaSatelliti(aperto);
+    disegnaSatelliti(aperto, conMoto);
   }
-  function scegli(nome) { if (fissato !== nome) filtroRepo = null; fissato = nome; selezione = null; apri(nome); pannello(); }
+  function scegli(nome) { if (fissato !== nome) filtroRepo = null; fissato = nome; selezione = null; apri(nome); pannello(); inquadra(nome); }
   function scegliObiettivo(slug) {
-    fissato = PREFISSO_OBIETTIVO + slug; selezione = null; apri(null); pannello();
+    fissato = PREFISSO_OBIETTIVO + slug; selezione = null; apri(null); pannello(); torna();   // the band may be out of a framed view
     if (!obiettiviSvg.has(slug)) disegna();   // a folded goal: the band always draws the fixed one
   }
   // fissa il nodo, seleziona il task e porta il pannello su di lui: la lista dei task può essere più lunga del pannello
@@ -615,7 +728,7 @@
     const d = $('mappa-dettaglio'), el = d.querySelector('.task.scelto');
     if (el) d.scrollTop += el.getBoundingClientRect().top - d.getBoundingClientRect().top - (d.clientHeight - el.offsetHeight) / 2;
   }
-  function deseleziona() { fissato = null; selezione = null; apri(null); pannello(); }
+  function deseleziona() { fissato = null; selezione = null; apri(null); pannello(); torna(); }
 
   // ---- lista equivalente (lettori di schermo; sotto i 760px prende il posto della mappa) ----
   // one task of the list, for nodes and goals alike; under a goal the row also names its node
@@ -626,6 +739,7 @@
       ...segniScadenza(t),
       ...motivi(t, n).map(m => h('span', 'sub motivo', [m])),
       ...segniRepo(t),
+      conNodo ? null : segnoObiettivo(t),   // under a goal the row already sits in its goal
     ]);
   }
   function lista() {
@@ -657,10 +771,11 @@
     const sel = selezione && selezione.testo === t.testo && selezione.data === t.data;
     const vis = statoVisivo(t), tuo = t.chi === 'te' && (t.derivato === 'pronto' || t.derivato === 'in_corso');
     const li = h('li', 'task st-' + vis + (t.derivato === 'incoerente' ? ' incoerente' : '') + (t.derivato === 'errore' ? ' errore' : '') + (sel ? ' scelto' : ''), [
-      h('span', 'task-testo' + (t.ritardo ? ' ritardo' : ''), [h('i', 'punto st-' + vis), t.vista, t.data ? h('span', 'sub', [' ' + (t.ritardo ? 'dal ' : '') + giornoBreve(t.data)]) : null, ...segniScadenza(t)]),
+      h('span', 'task-testo' + (t.ritardo ? ' ritardo' : ''), [h('span', 'titolo-task', [h('i', 'punto st-' + vis), t.vista]), t.data ? h('span', 'sub', [' ' + (t.ritardo ? 'dal ' : '') + giornoBreve(t.data)]) : null, ...segniScadenza(t)]),
       conNodo ? h('span', 'sub', [n.nome]) : null,
       ...motivi(t, n).map(m => h('span', 'sub motivo', [m])),
       ...segniRepo(t, !conNodo && !!repoFiltrato(n)),
+      conNodo ? null : segnoObiettivo(t),   // in a goal panel the row already sits in its goal
       h('span', 'riga-azioni', t.bozza ? [bottone('Apri in Post', '', apriPost)] : [selettore(n, t),
         n.haCartella && avviabile(t) ? bottone(t.derivato === 'in_corso' ? 'Riavvia' : 'Avvia', '', () => conferma(n, t)) : tuo ? h('span', 'sub tocca-a-te', ['Tocca a te']) : null]),
     ]);
@@ -672,7 +787,7 @@
   // «tutti / <repo>…» above the tasks of a node with more than one repo; the redraw keeps the focus on the pressed button
   function filtroPerRepo(n, attivo) {
     return h('div', 'scelta minore filtro-repo', [null, ...n.repo].map(r => {
-      const b = bottone(r === null ? 'tutti' : taglia(r, 24), '', () => {
+      const b = bottone(r === null ? 'tutti' : tagliata(r, 24), '', () => {
         filtroRepo = r === null ? null : { nodo: n.nome, repo: r };
         pannello();
         const su = document.querySelector('#mappa-dettaglio .filtro-repo [aria-pressed="true"]');
@@ -704,6 +819,11 @@
         puoAggiungere(n) ? bottone('Aggiungi un task', '', () => nuovoTask(n)) : null,
         bottone('Torna alla prossima azione', '', deseleziona),
       ]),
+      // the project itself: only a project of the index with its own folder, under a name the server accepts
+      n.tipo === 'progetto' && n.haCartella && NOME_PROGETTO.test(n.nome) ? h('div', 'riga-azioni azioni-progetto', [
+        n.senzaRepo ? bottone('Imposta cartella', '', () => impostaCartella(n)) : null,   // no Repo line names a folder yet
+        bottone('Archivia progetto', '', () => archivia(n)),
+      ]) : null,
     ];
   }
   // Panel of a goal: its steps across projects, in the same groups as a node
@@ -766,6 +886,67 @@
     ]);
   }
   // scrive la riga `- **Harness:**` nello STATE del progetto; il server controlla di nuovo progetto e valore
+  // Archives a project: the row leaves projects/INDEX.md and the folder moves to projects/_archivio/<nome> (the server picks a
+  // free name and checks everything again). Reversible, but it changes the vault: always behind this dialog, «Annulla» focused.
+  const NOME_PROGETTO = /^[a-z0-9][a-z0-9-]{0,59}$/;   // the server's rule (NOME_PROGETTO): other names are never offered
+  function archivia(n) {
+    if (inProva()) return toast('Modalità prova: nessuna modifica.');
+    const d = dialogo('mappa-archivia', 'Archivia progetto');
+    const ok = bottone('Archivia', 'primario', async () => {
+      ok.disabled = true;
+      try {
+        const r = await invia('/api/mappa/archivia', { nome: n.nome });
+        d.close();
+        if (r.stato === 400) return toast(CAMPO_NON_VALIDO[r.json && r.json.errore] || 'Dati non validi.');
+        if (!r.ok) return errore(r);
+        toast('Archiviato: ' + n.nome + '. La cartella è in ' + r.json.archivio + '.');
+        deseleziona();
+        await carica();
+        fuocoAlPannello();   // the dialog gave the focus back to «Archivia progetto», which is gone with the project
+      } catch (e) { d.close(); toast('Non è andata: ' + e.message); }
+    });
+    const annulla = bottone('Annulla', '', () => d.close());
+    d.replaceChildren(h('form', '', [
+      h('h2', '', ['Archivia progetto']),
+      h('p', '', ['Archiviare ' + n.nome + '? La riga sparisce da INDEX e la cartella va in projects/_archivio/' + n.nome + '. I task del piano restano.']),
+      h('p', 'sub', ['Si può annullare: rimetti la cartella in projects/ e la riga in INDEX.md. Nessun repo viene toccato.']),
+      h('div', 'riga-azioni', [ok, annulla]),
+    ], { method: 'dialog' }));
+    d.showModal();
+    annulla.focus();   // the safe choice is the one under Enter
+  }
+  // The folder of a project with no repo: a `- **Repo:**` line in its STATE. The server checks the path as for a new project
+  // (a local git repo, not a network or reserved path, not a disk root, not inside projects/) and answers with a code only.
+  function impostaCartella(n) {
+    if (inProva()) return toast('Modalità prova: nessuna modifica.');
+    const d = dialogo('mappa-cartella', 'Imposta cartella');
+    const campo = h('input', '', [], { type: 'text', maxlength: '400', required: '', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Percorso della cartella del repo' });
+    const salva = bottone('Imposta', 'primario', () => {});
+    salva.type = 'submit';
+    const form = h('form', '', [
+      h('h2', '', ['Imposta cartella']),
+      h('p', 'sub', ['Progetto: ' + n.nome + '. Il percorso assoluto della cartella di un repo git su questo computer: si scrive nello STATE come riga Repo, e «Avvia» si apre lì.']),
+      campo,
+      h('div', 'riga-azioni', [salva, bottone('Annulla', '', () => d.close())]),
+    ]);
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const cartella = campo.value.trim();
+      if (!cartella || !form.reportValidity()) return;
+      salva.disabled = true;
+      try {
+        const r = await invia('/api/mappa/cartella', { nome: n.nome, cartella });
+        if (r.stato === 400) { salva.disabled = false; campo.focus(); return toast(CAMPO_NON_VALIDO[r.json && r.json.errore] || 'Dati non validi.'); }   // stays open: fix the path
+        d.close();
+        if (!r.ok) return errore(r);
+        toast('Cartella impostata per ' + n.nome + '.');
+        await carica();
+      } catch (x) { d.close(); toast('Non è andata: ' + x.message); }
+    });
+    d.replaceChildren(form);
+    d.showModal();
+    campo.focus();
+  }
   function decidiHarness(n, decisione) {
     if (inProva()) return toast('Modalità prova: nessuna modifica.');
     const adegua = decisione === 'adeguare';
@@ -790,10 +971,22 @@
     ], { method: 'dialog' }));
     d.showModal();
   }
+  let chiavePannello;   // what the panel showed last: undefined before the first paint
+  // The focus to the panel's title (focusable by script only), and the panel into view: for an action that removed the button
+  // that had the focus, so a keyboard or screen reader user goes on from what changed instead of from the top of the page
+  function fuocoAlPannello() {
+    const titolo = $('mappa-dettaglio') && $('mappa-dettaglio').querySelector('h2');
+    if (!titolo) return;
+    titolo.setAttribute('tabindex', '-1');
+    titolo.focus();
+  }
   function pannello() {
     if (!dati || !$('mappa-dettaglio')) return;
     const o = obiettivoPer(fissato), n = fissato && nodoPer(fissato);
     $('mappa-dettaglio').replaceChildren(...(o ? dettaglioObiettivo(o) : n ? dettaglioNodo(n) : prossimaAzione()).filter(Boolean));
+    // another node or goal (or none): the new content fades in; a refresh or a task picked in the same panel does not
+    if (chiavePannello !== undefined && chiavePannello !== fissato) anima($('mappa-dettaglio'), [{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], 180);
+    chiavePannello = fissato;
     // le righe in ritardo dei prossimi giorni
     const g = giorni.slice(0, 5);
     $('prossimi-giorni').replaceChildren(...(g.length ? [h('h2', '', ['Prossimi giorni']), h('ul', 'prossimi', g.map(v => h('li', '', [
@@ -834,6 +1027,8 @@
     spento: 'Il modulo dell\'harness non è attivo in config.json.',
     'senza-repo': 'Questo progetto non ha un repo: non c\'è niente da adeguare.',
     righe: 'Lo STATE del progetto è già a 20 righe: accorcialo, poi riprova.',
+    'ha-repo': 'Questo progetto ha già un repo: per cambiarlo modifica la riga Repo del suo STATE.',
+    archivio: 'La cartella del progetto non è una cartella semplice dentro projects/ (o lo è projects/_archivio): non la sposto.',
   };
   function errore(r) {
     if (r.stato === 404) { toast('La voce è cambiata, ricarico.'); carica(); }
@@ -921,6 +1116,7 @@
     stack: 'Stack non valido: una riga sola, senza | < >.',
     priorita: 'Priorità non valida.',
     harness: 'Con un repo va scelto cosa fare dell\'harness: anche «da decidere» è una risposta.',
+    lavoro: 'I progetti di lavoro e la cartella riservata non si toccano dalla dashboard.',
   };
   function nuovoProgetto() {
     if (inProva()) return toast('Modalità prova: nessuna modifica.');
@@ -976,8 +1172,11 @@
     if (inProva()) return toast('Modalità prova: nessuna modifica.');
     t = n.task.find(x => x.data === t.data && x.testo === t.testo) || t;   // the Agenda passes a bare task: the node's own has the repos
     const validi = [...new Set(t.repo || [])];
-    let candidati = validi.length ? validi : n.repo || [];
-    if (ripresa && candidati.length < 2) candidati = n.repo || [];
+    // Two Repo lines with the same short name: without a valid repo: on the task the server refuses (409 cartella), so the
+    // dialog says why instead of offering a choice that would fail. `t.repo` never holds a twin: the server left it out.
+    const doppi = validi.length ? [] : n.repoDoppi || [];
+    let candidati = doppi.length ? [] : validi.length ? validi : n.repo || [];
+    if (ripresa && !doppi.length && candidati.length < 2) candidati = n.repo || [];
     const d = dialogo('mappa-avvia', 'Avvia in Claude');
     const radio = candidati.length > 1 ? candidati.map(r => h('input', '', [], { type: 'radio', name: 'repo', value: r })) : [];
     const avvia = bottone('Avvia', 'primario', async () => {
@@ -998,13 +1197,14 @@
       } catch (e) { d.close(); toast('Non è andata: ' + e.message); }
     });
     const annulla = bottone('Annulla', '', () => d.close());
-    avvia.disabled = radio.length > 0;   // nothing is picked for you
+    avvia.disabled = radio.length > 0 || doppi.length > 0;   // nothing is picked for you; with twins nothing can start
     radio.forEach(x => x.addEventListener('change', () => { avvia.disabled = false; }));
     d.replaceChildren(h('form', '', [
       h('h2', '', ['Avvia in Claude']),
       h('p', 'sub', ['Si apre il Terminale con una sessione di Claude.']),
       h('p', 'sub', ['Nodo: ' + n.nome]),
-      candidati.length === 1 ? h('p', 'sub', ['Repo: ' + candidati[0]]) : !candidati.length && n.cartella ? h('p', 'sub', ['Cartella: ' + n.cartella]) : null,
+      doppi.length ? h('p', 'sub motivo', ['Due repo di questo progetto hanno lo stesso nome (' + doppi.join(', ') + '): rinomina una delle cartelle o togli una riga Repo dallo STATE.'])
+        : candidati.length === 1 ? h('p', 'sub', ['Repo: ' + candidati[0]]) : !candidati.length && n.cartella ? h('p', 'sub', ['Cartella: ' + n.cartella]) : null,
       h('p', 'titolo-dialogo', [t.vista]),
       radio.length ? h('fieldset', 'scelta-repo', [h('legend', '', ['Repo in cui avviare']), ...radio.map(x => h('label', '', [x, x.value]))]) : null,
       h('div', 'riga-azioni', [avvia, annulla]),
@@ -1012,12 +1212,20 @@
     d.showModal();
   }
 
+  // The map filter, from its buttons and from a goal chip: the pressed button follows, the map and the list are redrawn
+  function impostaFiltro(k) {
+    filtro = k;
+    for (const b of document.querySelectorAll('.filtri-mappa [data-filtro]')) b.setAttribute('aria-pressed', String(b.getAttribute('data-filtro') === k));
+    disegna(); lista();
+  }
+
   // ---- struttura fissa (una volta) ----
   function struttura() {
     if ($('mappa-svg')) return;
-    const filtri = h('div', 'scelta', FILTRI.map(([k, nome]) => {
-      const b = bottone(nome, '', () => { filtro = k; for (const x of filtri.children) x.setAttribute('aria-pressed', String(x === b)); disegna(); lista(); });
+    const filtri = h('div', 'scelta filtri-mappa', FILTRI.map(([k, nome]) => {
+      const b = bottone(nome, '', () => impostaFiltro(k));
       b.setAttribute('aria-pressed', String(k === filtro));
+      b.setAttribute('data-filtro', k);
       return b;
     }), { role: 'group', 'aria-label': 'Filtro della mappa' });
     const svg = s('svg', { id: 'mappa-svg', role: 'group', tabindex: 0, 'aria-label': 'Mappa dei progetti e dei loro task: la stessa lista è sotto. Frecce per spostarla, più e meno per lo zoom, zero per la vista intera' });
@@ -1026,7 +1234,7 @@
       bottone('+', '', () => zoomCentro(1.25)), bottone('−', '', () => zoomCentro(0.8)), bottone('Adatta', '', adatta),
     ], { role: 'group', 'aria-label': 'Zoom della mappa' });
     [['Ingrandisci', 0], ['Riduci', 1], ['Adatta alla vista', 2]].forEach(([nome, i]) => zoom.children[i].setAttribute('aria-label', nome));
-    svg.addEventListener('pointerleave', () => { if (!fuocoNeiSatelliti()) apri(fissato); });
+    svg.addEventListener('pointerleave', () => { if (!fuocoNeiSatelliti()) apri(fissato, false, true); });
     const legenda = h('div', 'legenda', GRUPPI.map(([st]) => h('span', '', [h('i', 'punto st-' + st), NOME_VISIVO[st]])));
     $('mappa-area').replaceChildren(h('div', 'mappa-box', [
       h('div', 'mappa-testa', [h('h2', '', ['Mappa del lavoro']), h('div', 'mappa-testa-azioni', [filtri, bottone('Nuovo progetto', '', nuovoProgetto)])]), svg, legenda, zoom,

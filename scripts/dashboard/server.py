@@ -787,7 +787,8 @@ def progetti_indice(vault, riservate=None):
         out[nome.lower()] = {"nome": nome, "priorita": celle[5] if len(celle) > 5 else None,
                              "cartelle": [Path(r) for r in repo if r != "nessuno"],
                              # the allowlist of `repo:` markers, from the raw strings: a duplicated short name is left out
-                             "nomi_repo": list(per_nome), "percorsi_repo": per_nome, "repo_doppi": doppi}
+                             "nomi_repo": list(per_nome), "percorsi_repo": per_nome, "repo_doppi": doppi,
+                             "senza_repo": not any(_repo_vero(r) for r in repo)}
     return out
 
 
@@ -797,7 +798,8 @@ NOMI_RISERVATI = {"lavoro", "con", "prn", "aux", "nul"} | {"%s%d" % (p, i) for p
 PRIORITA = ("alta", "media", "bassa")
 REPO_MASSIMO = 400
 # i soli codici d'errore che vanno al client: il testo di un'altra eccezione può contenere un percorso del disco
-CODICI_PROGETTO = {"nome", "repo", "stack", "priorita", "lavoro", "esiste", "template", "riga", "harness", "spento", "senza-repo", "righe"}
+CODICI_PROGETTO = {"nome", "repo", "stack", "priorita", "lavoro", "esiste", "template", "riga", "harness", "spento", "senza-repo", "righe",
+                   "config", "archivio", "ha-repo"}
 # the same allow-list for the map's routes (stato, avvia, nuovo): the codes avvia_claude, imposta_stato and aggiungi_voce raise
 CODICI_MAPPA = {"doppia", "tuo", "in_attesa", "repo", "scegli_repo", "cartella", "config", "ripetuto", "apertura"}
 # The routes whose page shows the error text as it is send only these fixed sentences (from assistente.py, configurazione.py,
@@ -1064,6 +1066,20 @@ def imposta_harness(nome, decisione, vault=None, oggi=None):
     if not harness_modulo.attivo_in(vault):
         raise RuntimeError("spento")
     oggi = oggi or datetime.now().strftime("%Y-%m-%d")
+
+    def cambia(prima):
+        if not harness_modulo.repo_del_progetto(prima):
+            raise RuntimeError("senza-repo")
+        return _con_harness(prima, _riga_harness(decisione, oggi))
+    _riscrivi_stato(nome, vault, oggi, cambia)
+    return {"ok": True, "decisione": decisione, "comando": COMANDO_AUDIT if decisione == "adeguare" else None}
+
+
+def _riscrivi_stato(nome, vault, oggi, cambia):
+    """Rewrites a project's STATE with `cambia(testo)` (the new text, or it raises), the `Aggiornato` date of the STATE and the
+    date at the end of its row in INDEX.md both set to `oggi` (scripts/verify compares them): both files or neither.
+    Shared by imposta_harness and imposta_cartella. ValueError("lavoro"): a work row. LookupError: no row or no STATE.
+    RuntimeError: righe (the STATE would pass 20 lines), riga (the row has no date), and whatever `cambia` raises."""
     indice = vault / "projects" / "INDEX.md"
     with BLOCCO_PIANO:
         with open(indice, encoding="utf-8", newline="") as f:
@@ -1084,9 +1100,7 @@ def imposta_harness(nome, decisione, vault=None, oggi=None):
                 prima = f.read()
         except OSError:
             raise LookupError(nome)
-        if not harness_modulo.repo_del_progetto(prima):
-            raise RuntimeError("senza-repo")
-        dopo = RIGA_AGGIORNATO.sub(lambda m: m.group(1) + oggi, _con_harness(prima, _riga_harness(decisione, oggi)), count=1)
+        dopo = RIGA_AGGIORNATO.sub(lambda m: m.group(1) + oggi, cambia(prima), count=1)
         if len([r for r in dopo.splitlines() if r.strip()]) > RIGHE_STATE_MASSIME:
             raise RuntimeError("righe")
         corpo = righe[pos].rstrip("\r\n")
@@ -1099,7 +1113,135 @@ def imposta_harness(nome, decisione, vault=None, oggi=None):
         except BaseException:
             _scrivi_atomico(file_stato, [prima])  # le due date devono restare uguali: meglio nessuna modifica che una a metà
             raise
-    return {"ok": True, "decisione": decisione, "comando": COMANDO_AUDIT if decisione == "adeguare" else None}
+
+
+# A Repo line that names a folder: not «nessuno» nor the template's <placeholder> (as harness-progetti.py reads them)
+def _repo_vero(valore):
+    return valore != "nessuno" and not valore.startswith("<")
+
+
+RIGA_REPO_INTERA = re.compile(r"^- \*\*Repo:\*\*[^\r\n]*(\r?\n)?", re.M)
+
+
+def imposta_cartella(nome, cartella, vault=None, oggi=None):
+    """Writes `- **Repo:** <folder>` in the STATE of a project of the index that has no repo yet (no Repo line, or only «nessuno»
+    or the template's placeholder, which the new line replaces), with the dates of the STATE and of its row (_riscrivi_stato).
+    The folder is checked like nuovo_progetto's repo (_repo_del_progetto: a local absolute path of a git repo, network and
+    reserved paths refused before the disk is touched, then again once resolved) and, besides, must be a folder Claude may
+    start in (_cartella_avviabile: not a disk root, not one that holds a reserved folder) and not inside the vault's projects/.
+    The resolved path is what the STATE gets. Errors are codes only: the path never goes back to the client.
+    config.json is read strictly (ADR-002). With the harness module on, the project then waits in «Harness da decidere».
+    ValueError: lavoro, nome, repo. LookupError: not in the index. RuntimeError: config, ha-repo, righe, riga."""
+    vault = vault or VAULT
+    try:
+        scelta = percorsi.scelta_riservata(vault)
+    except RuntimeError:
+        raise RuntimeError("config") from None
+    if isinstance(nome, str) and nome.casefold() in percorsi.nomi_riservati(scelta):
+        raise ValueError("lavoro")
+    if not (isinstance(nome, str) and NOME_PROGETTO.fullmatch(nome)) or nome in NOMI_RISERVATI:
+        raise ValueError("nome")
+    basi = _basi_riservate(vault, scelta)
+    # projects/ joins the reserved bases for this check only: by its text first, then resolved, as _repo_del_progetto does
+    # and where projects/ itself leads when it is a link or junction
+    progetti = {os.path.normpath(str(p)).casefold() for p in (vault / "projects", vault.resolve() / "projects", (vault / "projects").resolve())}
+    percorso = _repo_del_progetto(cartella, vault, basi | progetti)
+    if _cartella_avviabile(percorso, vault, basi) is None:
+        raise ValueError("repo")
+    oggi = oggi or datetime.now().strftime("%Y-%m-%d")
+    riga = "- **Repo:** %s" % percorso
+
+    def cambia(prima):
+        if any(_repo_vero(r) for r in repo_di(prima)):
+            raise RuntimeError("ha-repo")  # a project with a repo changes it in its STATE, not from here
+        eol = "\r\n" if "\r\n" in prima else "\n"
+        if RIGA_REPO_INTERA.search(prima):  # the first empty Repo line takes the folder, the other empty ones go
+            primo = []
+            return RIGA_REPO_INTERA.sub(lambda m: "" if primo else (primo.append(1) or riga + (m.group(1) or "")), prima)
+        m = RIGA_AGGIORNATO.search(prima)
+        fine = m.start() if m else prima.find("\n") + 1  # above the date, or under the title
+        return prima[:fine] + riga + eol + prima[fine:] if fine else prima + eol + riga + eol
+    _riscrivi_stato(nome, vault, oggi, cambia)
+    return {"ok": True}
+
+
+ARCHIVIO = "_archivio"  # projects/_archivio/<nome>: archived projects, out of INDEX.md; scripts/verify skips the folder
+
+
+def archivia_progetto(nome, vault=None, oggi=None):
+    """Archives a project of projects/INDEX.md: its row leaves the index and projects/<nome>/ moves to projects/_archivio/<nome>,
+    or <nome>-AAAA-MM-GG, then <nome>-AAAA-MM-GG-2… when that is taken (never over anything). Reversible: move the folder back
+    and put the row back. The plan's #<nome> lines stay. It is one rename inside projects/: no repo on disk is touched, and a
+    link or junction is never moved nor followed (it could lead anywhere, a repo included). The folder moves first, then the
+    index is written; if the index cannot be written the folder goes back. If even that rename fails, the index error is
+    raised and the folder stays in projects/_archivio while its row stays in the index: nothing is lost, verify reports it.
+    config.json is read strictly: unreadable, the reserved folder is unknown, so nothing moves (ADR-002).
+    ValueError: lavoro (a reserved name, a work row, or a project folder that is, is inside or holds the reserved folder or
+    where one of them leads), nome (anything that is not a valid project name). LookupError: no row.
+    RuntimeError: config, riga (more than one row), archivio (the folder, or projects/_archivio, is missing, a link, or not
+    directly inside projects/). O(r) time, r = index rows."""
+    vault = vault or VAULT
+    try:
+        scelta = percorsi.scelta_riservata(vault)
+    except RuntimeError:
+        raise RuntimeError("config") from None
+    if isinstance(nome, str) and nome.casefold() in percorsi.nomi_riservati(scelta):
+        raise ValueError("lavoro")
+    if not (isinstance(nome, str) and NOME_PROGETTO.fullmatch(nome)) or nome in NOMI_RISERVATI:
+        raise ValueError("nome")
+    oggi = oggi or datetime.now().strftime("%Y-%m-%d")
+    progetti, indice = vault / "projects", vault / "projects" / "INDEX.md"
+    with BLOCCO_PIANO:
+        with open(indice, encoding="utf-8", newline="") as f:
+            righe = f.read().splitlines(keepends=True)
+        trovate = []
+        for i, r in enumerate(righe):
+            if (w := RIGA_LAVORO.match(r)) and w.group(1).casefold() == nome:
+                raise ValueError("lavoro")
+            m = RIGA_PROGETTO.match(r)
+            if m and m.group(1) == nome:
+                trovate.append(i)
+        if not trovate:
+            raise LookupError(nome)
+        if len(trovate) > 1:
+            raise RuntimeError("riga")
+        cartella, archivio = progetti / nome, progetti / ARCHIVIO
+        # Only plain folders directly inside projects/, checked before anything moves: is_symlink and is_junction look at the
+        # entry itself (is_junction is Python 3.12+; before it the resolved path below still refuses a junction that leads away)
+        try:
+            base = progetti.resolve(strict=True)
+
+            def semplice(p):
+                giunzione = getattr(p, "is_junction", lambda: False)()
+                return not p.is_symlink() and not giunzione and p.is_dir() and p.resolve(strict=True) == base / p.name
+            if not semplice(cartella) or (os.path.lexists(archivio) and not semplice(archivio)):
+                raise RuntimeError("archivio")
+            # ADR-002: the reserved folder can sit anywhere in the vault, or lead there through a link. The project folder must
+            # not be one, be inside one, or hold one (by its text and resolved, as _cartella_avviabile tests a launch folder):
+            # moving it would carry the reserved notes out from under the deny rules.
+            basi = _basi_riservate(vault, scelta)
+            for testo in {os.path.normpath(str(cartella)).casefold(), os.path.normpath(str(cartella.resolve(strict=True))).casefold()}:
+                if _in_cartella_riservata(testo, basi) or any(b.startswith(testo + os.sep) for b in basi):
+                    raise ValueError("lavoro")
+            archivio.mkdir(exist_ok=True)
+            meta, n = archivio / nome, 1
+            while os.path.lexists(meta):
+                n += 1
+                meta = archivio / ("%s-%s" % (nome, oggi) if n == 2 else "%s-%s-%d" % (nome, oggi, n - 1))
+        except (OSError, RuntimeError):  # a symlink loop is a RuntimeError too, and an OSError's text holds a path: only the code
+            raise RuntimeError("archivio") from None
+        os.rename(cartella, meta)  # same folder tree: a rename, never a copy; on Windows it fails rather than replace
+        try:
+            del righe[trovate[0]]
+            _scrivi_atomico(indice, righe)
+        except BaseException as errore:
+            try:
+                os.rename(meta, cartella)
+            except OSError:  # the way back failed too: the original error is the one to report (no path in the note)
+                if hasattr(errore, "add_note"):  # Python 3.11+
+                    errore.add_note("archivia_progetto: the folder could not go back and stays in projects/_archivio")
+            raise
+    return {"ok": True, "nome": nome, "archivio": "projects/%s/%s" % (ARCHIVIO, meta.name)}
 
 
 def _cartella_di(tipo, info, vault, basi=None):
@@ -1232,7 +1374,11 @@ def mappa(adesso, piano_file=None, vault=None):
     def nuovo(i):
         cartella = _cartella_di("progetto", i, vault, basi)
         nodo = {"nome": i["nome"], "tipo": "progetto", "priorita": i["priorita"], "haCartella": cartella is not None,
-                "cartella": _str_o_none(cartella), "repo": i.get("nomi_repo", []), "task": []}
+                "cartella": _str_o_none(cartella), "repo": i.get("nomi_repo", []),
+                # short names only, never paths: «Avvia» says why a task without a valid repo: cannot start (409 cartella)
+                "repoDoppi": i.get("repo_doppi", []),
+                # a boolean only: no Repo line names a folder, so the panel offers «Imposta cartella» (never for work projects)
+                "senzaRepo": bool(i.get("senza_repo")), "task": []}
         voce = harness.get(i["nome"].lower())
         if voce and not i.get("lavoro"):
             nodo["harness"] = {"stato": voce["stato"], "decisione": voce["decisione"], "data": voce["data_decisione"], "report": voce["report"]}
@@ -1972,7 +2118,7 @@ class Gestore(BaseHTTPRequestHandler):
         if percorso == "/api/piano/aggiungi":
             self._piano_aggiungi()
             return
-        if percorso in ("/api/mappa/progetto", "/api/mappa/priorita", "/api/mappa/harness"):
+        if percorso in ("/api/mappa/progetto", "/api/mappa/priorita", "/api/mappa/harness", "/api/mappa/archivia", "/api/mappa/cartella"):
             self._mappa_progetto(percorso.rsplit("/", 1)[1])
             return
         if percorso == "/api/radar/feedback":
@@ -2095,14 +2241,20 @@ class Gestore(BaseHTTPRequestHandler):
         self._json(esito)
 
     def _mappa_progetto(self, azione):
-        """azione: «progetto» (ne crea uno), «priorita» (cambia quella di un progetto dell'indice) o «harness» (scrive la decisione
-        sull'harness nello STATE). L'errore dice quale campo non va."""
+        """azione: «progetto» (ne crea uno), «priorita» (cambia quella di un progetto dell'indice), «harness» (scrive la decisione
+        sull'harness nello STATE), «archivia» (toglie la riga dall'indice e sposta la cartella in projects/_archivio) o «cartella»
+        (scrive la riga Repo di un progetto che non ne ha).
+        L'errore dice quale campo non va."""
         corpo = self._corpo_json() or {}
         try:
             if azione == "progetto":
                 esito = nuovo_progetto(corpo.get("nome"), corpo.get("repo"), corpo.get("stack"), corpo.get("priorita"), harness=corpo.get("harness"))
             elif azione == "harness":
                 esito = imposta_harness(corpo.get("nome"), corpo.get("decisione"))
+            elif azione == "archivia":
+                esito = archivia_progetto(corpo.get("nome"))
+            elif azione == "cartella":
+                esito = imposta_cartella(corpo.get("nome"), corpo.get("cartella"))
             else:
                 esito = imposta_priorita(corpo.get("nome"), corpo.get("priorita"))
         except ValueError as e:

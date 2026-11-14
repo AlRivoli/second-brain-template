@@ -7,6 +7,7 @@ import io
 import json
 import os
 import re
+import shutil
 import tempfile
 import threading
 import unittest
@@ -571,6 +572,11 @@ class RepoMappaTest(unittest.TestCase):
         m = mappa_di("## A\n- [ ] #alfa uno repo:api,web\n", repo={"alfa": [API, r"D:\altro\api", WEB]})
         alfa = next(x for x in m["nodi"] if x["nome"] == "alfa")
         self.assertEqual((alfa["repo"], alfa["task"][0]["repo"], alfa["task"][0]["repoIgnoti"]), (["web"], ["web"], ["api"]))
+        # the twins travel by short name only, so «Avvia» can say why it cannot start: never a path
+        self.assertEqual(alfa["repoDoppi"], ["api"])
+        self.assertFalse(any("\\" in r or "/" in r for r in alfa["repoDoppi"]))
+        beta = next(x for x in m["nodi"] if x["nome"] == "beta")
+        self.assertEqual(beta["repoDoppi"], [])
 
     def test_stesso_repo(self):
         m = mappa_di("## A\n- [~] #alfa corre repo:api\n- [ ] #alfa pronto repo:api\n- [ ] #alfa altro repo:web\n- [ ] #alfa libero\n", repo={"alfa": [API, WEB]})
@@ -1860,6 +1866,33 @@ class RotteMappaTest(unittest.TestCase):
         self.assertEqual((stato, corpo["decisione"]), (200, "non adeguare"))
         self.assertIn("- **Harness:** non adeguare questo progetto (", (self.v / "projects" / "alfa" / "STATE.md").read_text(encoding="utf-8"))
 
+    def test_archivia_403_400_404_409_200(self):
+        self.assertEqual(self.post("/api/mappa/archivia", {"nome": "beta"}, azione=False), 403)
+        for corpo, codice in (({"nome": "../beta"}, "nome"), ({}, "nome"), ({"nome": 5}, "nome"), ({"nome": "lavoro"}, "lavoro")):
+            self.assertEqual(self.post_json("/api/mappa/archivia", corpo), (400, {"errore": codice}), corpo)
+        self.assertEqual(self.post("/api/mappa/archivia", {"nome": "manca"}), 404)
+        (self.v / "config.json").write_text("{rotto", encoding="utf-8")
+        self.assertEqual(self.post_json("/api/mappa/archivia", {"nome": "beta"}), (409, {"errore": "config"}))
+        (self.v / "config.json").unlink()
+        self.assertEqual(self.post_json("/api/mappa/archivia", {"nome": "beta"}),
+                         (200, {"ok": True, "nome": "beta", "archivio": "projects/_archivio/beta"}))
+        self.assertTrue((self.v / "projects" / "_archivio" / "beta" / "STATE.md").is_file())
+        self.assertNotIn("beta", server.progetti_indice(self.v))
+
+    def test_cartella_403_400_404_409_200_senza_mai_ridire_il_percorso(self):
+        repo = Path(tempfile.mkdtemp()) / "segreto-nel-nome"
+        self.addCleanup(shutil.rmtree, repo.parent, ignore_errors=True)
+        (repo / ".git").mkdir(parents=True)
+        self.assertEqual(self.post("/api/mappa/cartella", {"nome": "beta", "cartella": str(repo)}, azione=False), 403)
+        for corpo, codice in (({"nome": "beta", "cartella": str(repo.parent / "manca")}, "repo"), ({"nome": "beta"}, "repo"),
+                              ({"nome": "../beta", "cartella": str(repo)}, "nome"), ({"nome": "lavoro", "cartella": str(repo)}, "lavoro")):
+            stato, risposta = self.post_json("/api/mappa/cartella", corpo)
+            self.assertEqual((stato, risposta), (400, {"errore": codice}), corpo)
+        self.assertEqual(self.post("/api/mappa/cartella", {"nome": "manca", "cartella": str(repo)}), 404)
+        self.assertEqual(self.post_json("/api/mappa/cartella", {"nome": "alfa", "cartella": str(repo)}), (409, {"errore": "ha-repo"}))
+        self.assertEqual(self.post_json("/api/mappa/cartella", {"nome": "beta", "cartella": str(repo)}), (200, {"ok": True}))
+        self.assertIn("- **Repo:** %s\n" % repo.resolve(), (self.v / "projects" / "beta" / "STATE.md").read_text(encoding="utf-8"))
+
     def test_harness_con_il_modulo_spento_409(self):
         self.assertEqual(self.post_json("/api/mappa/harness", {"nome": "alfa", "decisione": "adeguare"}), (409, {"errore": "spento"}))
 
@@ -2001,6 +2034,327 @@ class HarnessTest(unittest.TestCase):
         (repo / ".git").mkdir(parents=True)
         server.nuovo_progetto("gamma", str(repo), vault=self.v, oggi="2026-11-10")
         self.assertNotIn("Harness", (self.v / "projects" / "gamma" / "STATE.md").read_text(encoding="utf-8"))
+
+
+
+verify_test = carica(RADICE / "scripts" / "test_verify.py", "verify_test")   # make_vault and run_verify: a vault that passes verify
+RISERVATA = "_" + "private"  # spezzato: la regola deny su Bash blocca ogni comando che contiene il nome
+
+
+def temporanea(test):
+    """A temporary folder removed when the test ends (rmtree does not follow a junction or a symlink inside it)."""
+    d = Path(tempfile.mkdtemp())
+    test.addCleanup(shutil.rmtree, d, ignore_errors=True)
+    return d
+
+
+def vault_verificabile(test):
+    """A vault that passes scripts/verify, with progetto-a and progetto-b in INDEX and a daily note linking both STATE files."""
+    v = temporanea(test)
+    stato_b = verify_test.GOOD_STATE.replace("# progetto-a", "# progetto-b")
+    indice = verify_test.GOOD_INDEX + "| [[projects/progetto-b/STATE|progetto-b]] | Python | in corso | media | 2026-10-22 |\n"
+    verify_test.make_vault(v, index=indice, extra={"projects/progetto-b/STATE.md": stato_b,
+                                                   "daily/2026-11-10.md": "Visti [[projects/progetto-a/STATE|progetto-a]] e [[projects/progetto-b/STATE|progetto-b]].\n"})
+    return v
+
+
+class ArchiviaProgettoTest(unittest.TestCase):
+    def test_archivia_toglie_la_riga_e_sposta_la_cartella_e_verify_passa(self):
+        v = vault_verificabile(self)
+        self.assertEqual(verify_test.run_verify(v)[0], 0)
+        piano = v / "docs" / "piano.md"
+        piano.parent.mkdir()
+        piano.write_text("## A\n- [ ] #progetto-b resta\n", encoding="utf-8")
+        esito = server.archivia_progetto("progetto-b", vault=v, oggi="2026-11-12")
+        self.assertEqual(esito, {"ok": True, "nome": "progetto-b", "archivio": "projects/_archivio/progetto-b"})
+        self.assertFalse((v / "projects" / "progetto-b").exists())
+        self.assertTrue((v / "projects" / "_archivio" / "progetto-b" / "STATE.md").is_file())
+        indice = (v / "projects" / "INDEX.md").read_text(encoding="utf-8")
+        self.assertNotIn("progetto-b", indice)
+        self.assertIn("progetto-a", indice)
+        self.assertEqual(piano.read_text(encoding="utf-8"), "## A\n- [ ] #progetto-b resta\n")   # the plan keeps its lines
+        self.assertNotIn("progetto-b", server.progetti_indice(v))
+        codice, uscita = verify_test.run_verify(v)
+        self.assertEqual(codice, 0, uscita)   # the archive is skipped, the daily note's link still resolves
+
+    def test_destinazione_occupata_prende_la_data_poi_un_contatore(self):
+        v = vault_verificabile(self)
+        archivio = v / "projects" / "_archivio"
+        (archivio / "progetto-b").mkdir(parents=True)
+        (archivio / "progetto-b" / "vecchio.md").write_text("vecchio", encoding="utf-8")
+        (archivio / "progetto-b-2026-11-12").mkdir()
+        esito = server.archivia_progetto("progetto-b", vault=v, oggi="2026-11-12")
+        self.assertEqual(esito["archivio"], "projects/_archivio/progetto-b-2026-11-12-2")
+        self.assertEqual((archivio / "progetto-b" / "vecchio.md").read_text(encoding="utf-8"), "vecchio")   # never overwritten
+        self.assertTrue((archivio / "progetto-b-2026-11-12-2" / "STATE.md").is_file())
+        self.assertEqual(verify_test.run_verify(v)[0], 0)
+
+    def test_rifiuta_nomi_non_validi_lavoro_riservati_e_assenti(self):
+        v = vault_verificabile(self)
+        (v / "config.json").write_text(json.dumps({"moduli": {"riservata": {"attivo": True, "cartella": "projects/confidential-notes"}}}), encoding="utf-8")
+        indice = v / "projects" / "INDEX.md"
+        with indice.open("a", encoding="utf-8") as i:
+            i.write("| [[projects" "/" "lavoro" "/cliente/STATE\\|cliente]] | Stack | Stato | alta | 2026-11-09 |\n"
+                    "| [[projects/confidential-notes/STATE\\|confidential-notes]] | Stack | Stato | alta | 2026-11-09 |\n")
+        (v / "projects" / "confidential-notes").mkdir()
+        prima = indice.read_bytes()
+        casi = [(n, "nome") for n in ("Progetto-B", "../progetto-b", "progetto-b/..", "-x", "x" * 61, "", None, 5, "_archivio", "con")]
+        casi += [(n, "lavoro") for n in ("lavoro", RISERVATA, "confidential-notes", "Confidential-Notes", "cliente")]
+        for nome, codice in casi:
+            with self.subTest(nome=nome), self.assertRaises(ValueError) as c:
+                server.archivia_progetto(nome, vault=v)
+            self.assertEqual(str(c.exception), codice)
+        with self.assertRaises(LookupError):
+            server.archivia_progetto("manca", vault=v)
+        self.assertEqual(indice.read_bytes(), prima)
+        self.assertTrue((v / "projects" / "confidential-notes").is_dir())
+        self.assertFalse((v / "projects" / "_archivio").exists())
+
+    def test_config_illeggibile_non_archivia(self):
+        v = vault_verificabile(self)
+        (v / "config.json").write_text("{non json", encoding="utf-8")
+        with self.assertRaises(RuntimeError) as c:
+            server.archivia_progetto("progetto-b", vault=v)
+        self.assertEqual(str(c.exception), "config")
+        self.assertTrue((v / "projects" / "progetto-b").is_dir())
+
+    def test_riga_doppia_o_cartella_mancante(self):
+        v = vault_verificabile(self)
+        indice = v / "projects" / "INDEX.md"
+        indice.write_text(indice.read_text(encoding="utf-8") + "| [[projects/progetto-b/STATE|progetto-b]] | x | x | x | 2026-10-22 |\n", encoding="utf-8")
+        with self.assertRaises(RuntimeError) as c:
+            server.archivia_progetto("progetto-b", vault=v)
+        self.assertEqual(str(c.exception), "riga")
+        v = vault_verificabile(self)
+        shutil.rmtree(v / "projects" / "progetto-b")
+        with self.assertRaises(RuntimeError) as c:
+            server.archivia_progetto("progetto-b", vault=v)
+        self.assertEqual(str(c.exception), "archivio")
+        self.assertIn("progetto-b", (v / "projects" / "INDEX.md").read_text(encoding="utf-8"))
+
+    def test_un_link_non_si_segue_e_non_si_sposta(self):
+        # projects/<name> as a link or junction to a repo elsewhere: archiving would carry it, or what it points to, out of reach
+        for tipo in ("symlink", "junction"):
+            with self.subTest(tipo=tipo):
+                v = vault_verificabile(self)
+                fuori = temporanea(self) / "repo"
+                (fuori / ".git").mkdir(parents=True)
+                (fuori / "codice.txt").write_text("x", encoding="utf-8")
+                shutil.rmtree(v / "projects" / "progetto-b")
+                if not crea_link(tipo, v / "projects" / "progetto-b", fuori):
+                    continue
+                with self.assertRaises(RuntimeError) as c:
+                    server.archivia_progetto("progetto-b", vault=v)
+                self.assertEqual(str(c.exception), "archivio")
+                self.assertTrue((fuori / "codice.txt").is_file())
+                self.assertFalse((v / "projects" / "_archivio" / "progetto-b").exists())
+                self.assertIn("progetto-b", (v / "projects" / "INDEX.md").read_text(encoding="utf-8"))
+
+    def test_un_archivio_che_e_un_link_non_si_usa(self):
+        v = vault_verificabile(self)
+        fuori = temporanea(self)
+        if not (crea_link("junction", v / "projects" / "_archivio", fuori) or crea_link("symlink", v / "projects" / "_archivio", fuori)):
+            self.skipTest("this system creates neither symlinks nor junctions")
+        with self.assertRaises(RuntimeError) as c:
+            server.archivia_progetto("progetto-b", vault=v)
+        self.assertEqual(str(c.exception), "archivio")
+        # Python 3.9-3.11 have no Path.is_junction (the vault promises 3.9+): the resolved path still refuses the link
+        originale = server.Path.__dict__.get("is_junction")
+        if originale is not None:
+            del server.Path.is_junction
+        try:
+            with self.assertRaises(RuntimeError) as c:
+                server.archivia_progetto("progetto-b", vault=v)
+            self.assertEqual(str(c.exception), "archivio")
+        finally:
+            if originale is not None:
+                server.Path.is_junction = originale
+        self.assertEqual(list(fuori.iterdir()), [])
+        self.assertTrue((v / "projects" / "progetto-b").is_dir())
+
+    def test_se_l_indice_non_si_scrive_la_cartella_torna_al_suo_posto(self):
+        v = vault_verificabile(self)
+        prima = (v / "projects" / "INDEX.md").read_bytes()
+        with mock.patch.object(server, "_scrivi_atomico", side_effect=OSError("disco pieno")), self.assertRaises(OSError):
+            server.archivia_progetto("progetto-b", vault=v)
+        self.assertTrue((v / "projects" / "progetto-b" / "STATE.md").is_file())
+        self.assertFalse((v / "projects" / "_archivio" / "progetto-b").exists())
+        self.assertEqual((v / "projects" / "INDEX.md").read_bytes(), prima)
+
+    def test_se_anche_il_ritorno_fallisce_resta_l_errore_originale(self):
+        v = vault_verificabile(self)
+        prima = (v / "projects" / "INDEX.md").read_bytes()
+        vero = os.rename
+        mosse = []
+
+        def rinomina(da, a):
+            mosse.append(1)
+            if len(mosse) > 1:
+                raise PermissionError("ritorno bloccato")
+            return vero(da, a)
+        with mock.patch.object(server, "_scrivi_atomico", side_effect=OSError("disco pieno")), \
+                mock.patch.object(server.os, "rename", rinomina), self.assertRaises(OSError) as c:
+            server.archivia_progetto("progetto-b", vault=v)
+        self.assertEqual(str(c.exception), "disco pieno")   # the error that stopped the archive, not the failed way back
+        # what the docstring promises: the folder stays in the archive, the index row stays, nothing is lost
+        self.assertTrue((v / "projects" / "_archivio" / "progetto-b" / "STATE.md").is_file())
+        self.assertEqual((v / "projects" / "INDEX.md").read_bytes(), prima)
+
+    def _riservata(self, v, cartella):
+        (v / "config.json").write_text(json.dumps({"moduli": {"riservata": {"attivo": True, "cartella": cartella}}}), encoding="utf-8")
+
+    def _rifiutato_senza_toccare_nulla(self, v):
+        prima = (v / "projects" / "INDEX.md").read_bytes()
+        with self.assertRaises(ValueError) as c:
+            server.archivia_progetto("progetto-b", vault=v)
+        self.assertEqual(str(c.exception), "lavoro")
+        self.assertEqual((v / "projects" / "INDEX.md").read_bytes(), prima)
+        self.assertTrue((v / "projects" / "progetto-b" / "STATE.md").is_file())
+        self.assertFalse((v / "projects" / "_archivio").exists())
+
+    def test_una_cartella_riservata_dentro_il_progetto_non_si_sposta(self):
+        # ADR-002: the reserved folder may live anywhere in the vault; moving the project would carry it away from the deny rules
+        v = vault_verificabile(self)
+        dentro = v / "projects" / "progetto-b" / "riservato-x"
+        dentro.mkdir()
+        (dentro / "nota.md").write_text("riservato", encoding="utf-8")
+        self._riservata(v, "projects/progetto-b/riservato-x")
+        self._rifiutato_senza_toccare_nulla(v)
+        self.assertEqual((dentro / "nota.md").read_text(encoding="utf-8"), "riservato")
+
+    def test_una_cartella_riservata_altrove_che_porta_dentro_il_progetto(self):
+        # the reserved folder is a link or junction elsewhere in the vault whose target is inside the project
+        v = vault_verificabile(self)
+        bersaglio = v / "projects" / "progetto-b" / "dati"
+        bersaglio.mkdir()
+        (v / "riservate").mkdir()
+        if not (crea_link("symlink", v / "riservate" / "segreto", bersaglio) or crea_link("junction", v / "riservate" / "segreto", bersaglio)):
+            self.skipTest("this system creates neither symlinks nor junctions")
+        self._riservata(v, "riservate/segreto")
+        self._rifiutato_senza_toccare_nulla(v)
+
+
+
+class ImpostaCartellaTest(unittest.TestCase):
+    """«Imposta cartella»: the Repo line of a project that has none, checked like nuovo_progetto's repo, never echoed back."""
+
+    def setUp(self):
+        self.radice = temporanea(self)   # the vault sits one level down: its parent can hold a test .git of its own
+        self.v = self.radice / "vault"
+        self.v.mkdir()
+        stato_b = verify_test.GOOD_STATE.replace("# progetto-a", "# progetto-b")
+        indice = verify_test.GOOD_INDEX + "| [[projects/progetto-b/STATE|progetto-b]] | Python | in corso | media | 2026-10-22 |\n"
+        verify_test.make_vault(self.v, index=indice, extra={"projects/progetto-b/STATE.md": stato_b})
+        self.repo = temporanea(self) / "il-repo"
+        (self.repo / ".git").mkdir(parents=True)
+        self.stato = self.v / "projects" / "progetto-b" / "STATE.md"
+
+    def imposta(self, cartella, nome="progetto-b"):
+        return server.imposta_cartella(nome, cartella, vault=self.v, oggi="2026-11-12")
+
+    def rifiutata(self, cartella, codice="repo", nome="progetto-b", eccezione=ValueError):
+        prima = (self.stato.read_bytes(), (self.v / "projects" / "INDEX.md").read_bytes())
+        with self.assertRaises(eccezione) as c:
+            self.imposta(cartella, nome)
+        self.assertEqual(str(c.exception), codice)
+        self.assertEqual((self.stato.read_bytes(), (self.v / "projects" / "INDEX.md").read_bytes()), prima)
+
+    def test_scrive_la_riga_repo_e_le_date_e_verify_passa(self):
+        self.assertEqual(self.imposta(str(self.repo)), {"ok": True})
+        testo = self.stato.read_text(encoding="utf-8")
+        self.assertIn("- **Repo:** %s\n- **Aggiornato:** 2026-11-12\n" % self.repo.resolve(), testo)
+        self.assertNotIn("nessuno\n- **Aggiornato", testo)
+        self.assertTrue(testo.startswith("# progetto-b\n"))
+        self.assertIn("| media | 2026-11-12 |", (self.v / "projects" / "INDEX.md").read_text(encoding="utf-8"))
+        self.assertEqual(server.progetti_indice(self.v)["progetto-b"]["cartelle"], [self.repo.resolve()])
+        codice, uscita = verify_test.run_verify(self.v)
+        self.assertEqual(codice, 0, uscita)
+
+    def test_il_segnaposto_del_template_o_nessuna_riga(self):
+        for prima in ("# progetto-b\n- **Repo:** <percorso locale, o \"nessuno\">\n- **Aggiornato:** 2026-10-22\n## Obiettivo attuale\n",
+                      "# progetto-b\n- **Aggiornato:** 2026-10-22\n## Obiettivo attuale\n",
+                      "# progetto-b\n- **Repo:** nessuno\n- **Repo:** <altro>\n- **Aggiornato:** 2026-10-22\n## Obiettivo attuale\n"):
+            with self.subTest(prima=prima):
+                self.stato.write_text(prima, encoding="utf-8")
+                self.imposta(str(self.repo))
+                self.assertEqual(self.stato.read_text(encoding="utf-8"),
+                                 "# progetto-b\n- **Repo:** %s\n- **Aggiornato:** 2026-11-12\n## Obiettivo attuale\n" % self.repo.resolve())
+
+    def test_crlf_conservato(self):
+        self.stato.write_bytes(self.stato.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+        self.imposta(str(self.repo))
+        self.assertIn(("- **Repo:** %s\r\n- **Aggiornato:** 2026-11-12\r\n" % self.repo.resolve()).encode("utf-8"), self.stato.read_bytes())
+        self.assertNotIn(b"\n", self.stato.read_bytes().replace(b"\r\n", b""))
+
+    def test_cartelle_non_valide_rifiutate(self):
+        file = self.repo.parent / "un-file"
+        file.write_text("x", encoding="utf-8")
+        senza_git = self.repo.parent / "senza-git"
+        senza_git.mkdir()
+        dentro_projects = self.v / "projects" / "progetto-a"
+        (dentro_projects / ".git").mkdir()
+        nel_lavoro = self.v / "projects" / "lavoro" / "cliente"
+        (nel_lavoro / ".git").mkdir(parents=True)
+        (self.radice / ".git").mkdir()   # the folder that holds the whole vault, its reserved folders included
+        for cartella in (str(self.repo.parent / "manca"), str(file), str(senza_git), "relativo/repo", "", None, 5, str(self.repo) + "\nx",
+                         str(self.repo) + "|x", "x" * 401, str(dentro_projects), str(self.v / "projects"), str(nel_lavoro), str(self.radice),
+                         Path(tempfile.gettempdir()).anchor):
+            with self.subTest(cartella=cartella):
+                self.rifiutata(cartella)
+
+    def test_un_link_fuori_dal_vault_che_porta_dentro_projects(self):
+        dentro = self.v / "projects" / "progetto-a"
+        (dentro / ".git").mkdir()
+        fuori = temporanea(self)
+        if not (crea_link("symlink", fuori / "scorciatoia", dentro) or crea_link("junction", fuori / "scorciatoia", dentro)):
+            self.skipTest("this system creates neither symlinks nor junctions")
+        self.rifiutata(str(fuori / "scorciatoia"))
+
+    def test_projects_che_e_un_link_protegge_dove_porta(self):
+        # projects/ itself a link or junction: what it leads to is protected too, not only its text under the vault
+        altrove = temporanea(self) / "progetti-veri"
+        shutil.move(str(self.v / "projects"), str(altrove))
+        if not (crea_link("symlink", self.v / "projects", altrove) or crea_link("junction", self.v / "projects", altrove)):
+            shutil.move(str(altrove), str(self.v / "projects"))
+            self.skipTest("this system creates neither symlinks nor junctions")
+        (altrove / "progetto-a" / ".git").mkdir()
+        self.rifiutata(str(altrove / "progetto-a"))
+
+    def test_percorsi_di_rete_non_toccano_il_disco(self):
+        with senza_disco_di_rete(), unita_z_di_rete():
+            for cartella in ("\\\\srv\\share\\repo", "//srv/share/repo", "Z:\\repo"):
+                with self.subTest(cartella=cartella):
+                    self.rifiutata(cartella)
+
+    def test_progetti_non_ammessi(self):
+        (self.v / "config.json").write_text(json.dumps({"moduli": {"riservata": {"attivo": True, "cartella": "projects/confidential-notes"}}}), encoding="utf-8")
+        with (self.v / "projects" / "INDEX.md").open("a", encoding="utf-8") as i:
+            i.write("| [[projects" "/" "lavoro" "/cliente/STATE\\|cliente]] | Stack | Stato | alta | 2026-11-09 |\n")
+        for nome in ("lavoro", RISERVATA, "confidential-notes", "cliente"):
+            self.rifiutata(str(self.repo), "lavoro", nome)
+        for nome in ("Progetto-B", "../progetto-b", "", None, 5):
+            self.rifiutata(str(self.repo), "nome", nome)
+        with self.assertRaises(LookupError):
+            self.imposta(str(self.repo), "manca")
+
+    def test_un_progetto_con_un_repo_non_si_cambia_da_qui(self):
+        altro = temporanea(self)
+        self.stato.write_text(self.stato.read_text(encoding="utf-8").replace("nessuno", str(altro), 1), encoding="utf-8")
+        self.rifiutata(str(self.repo), "ha-repo", eccezione=RuntimeError)
+
+    def test_config_illeggibile_o_state_troppo_lungo(self):
+        (self.v / "config.json").write_text("{rotto", encoding="utf-8")
+        self.rifiutata(str(self.repo), "config", eccezione=RuntimeError)
+        (self.v / "config.json").unlink()
+        self.stato.write_text("# progetto-b\n- **Aggiornato:** 2026-10-22\n" + "".join("riga %d\n" % i for i in range(18)), encoding="utf-8")
+        self.rifiutata(str(self.repo), "righe", eccezione=RuntimeError)
+
+    def test_la_mappa_offre_la_cartella_solo_a_chi_non_ha_un_repo(self):
+        m = mappa_di("## A\n", repo={"alfa": [API]})
+        n = {x["nome"]: x for x in m["nodi"]}
+        self.assertEqual((n["alfa"]["senzaRepo"], n["beta"]["senzaRepo"]), (False, True))
+        m = mappa_di("## A\n", repo={"beta": ["<percorso locale, o \"nessuno\">"]})
+        self.assertTrue(next(x for x in m["nodi"] if x["nome"] == "beta")["senzaRepo"])
 
 
 if __name__ == "__main__":

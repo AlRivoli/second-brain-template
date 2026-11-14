@@ -348,6 +348,25 @@ class VerifyTest(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn('nuovo', out)
 
+    def test_progetti_archiviati_fuori_da_index_e_i_loro_link_restano_validi(self):
+        # the dashboard moves an archived project to projects/_archivio/<name> (or <name>-AAAA-MM-GG[-n]); old notes keep linking it
+        stato = GOOD_STATE.replace('# progetto-a', '# vecchio')
+        nota = ('[[projects/vecchio/STATE|vecchio]] [[projects/doppio/STATE]] [[projects/doppio/decisions]] '
+                '[[projects/sito-2026-01-01/STATE]]\n')   # a project whose own name ends in a date
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), extra={'projects/_archivio/sito-2026-01-01/STATE.md': stato,
+                                                 'projects/_archivio/vecchio/STATE.md': stato,
+                                                 'projects/_archivio/doppio-2026-11-12-2/STATE.md': stato,
+                                                 'projects/_archivio/doppio-2026-11-12-2/decisions.md': 'x',
+                                                 'daily/2026-11-12.md': nota})
+            code, out = run_verify(tmp)
+            self.assertEqual(code, 0, out)
+        with tempfile.TemporaryDirectory() as tmp:  # a project never archived is still a broken link
+            make_vault(pathlib.Path(tmp), extra={'projects/_archivio/vecchio/STATE.md': stato, 'daily/2026-11-12.md': '[[projects/altro/STATE]]\n'})
+            code, out = run_verify(tmp)
+            self.assertEqual(code, 1)
+            self.assertIn('projects/altro/STATE', out)
+
     def test_data_index_diversa_da_state(self):
         index = GOOD_INDEX.replace('2026-10-22', '2026-10-01')
         with tempfile.TemporaryDirectory() as tmp:

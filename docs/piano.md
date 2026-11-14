@@ -4,11 +4,11 @@ Passi aperti, con la data quando c'è. Si segnano con `[x]` quando sono fatti. L
 
 ## Prossimi giorni
 
-- [ ] Scrivi lo STATE del tuo primo progetto vero (`/nuovo-progetto <nome>`)
+- [ ] Scrivi lo STATE del tuo primo progetto vero (`/nuovo-progetto <nome>`) id:primo-stato obiettivo:avvio
 
 ## Più avanti
 
-- [ ] Scegli i temi del radar in `memory/radar-topics.md`
+- [ ] Scegli i temi del radar in `memory/radar-topics.md` dopo:primo-stato obiettivo:avvio
 
 ## Fatti
 

@@ -4,7 +4,7 @@
   const NS = 'http://www.w3.org/2000/svg';
   const STATI = ['da_fare', 'in_corso', 'fatto'];
   const NOME_STATO = { da_fare: 'da fare', in_corso: 'in corso', fatto: 'fatto' };
-  const FILTRI = [['tutto', 'Tutto'], ['aperti', 'Aperti'], ['progetti', 'Progetti'], ['argomenti', 'Argomenti']];
+  const FILTRI = [['tutto', 'Tutto'], ['aperti', 'Aperti'], ['progetti', 'Progetti'], ['argomenti', 'Argomenti'], ['obiettivi', 'Obiettivi']];
   // What the map shows: four states derived from the dependency graph. The selector above still writes the raw three.
   const VISIVI = ['fatto', 'in_corso', 'pronto', 'in_attesa'];   // ring order
   const NOME_VISIVO = { pronto: 'pronto', in_corso: 'in corso', in_attesa: 'in attesa', fatto: 'fatto' };
@@ -21,9 +21,10 @@
   let impronta = '';        // per non ridisegnare (e non interrompere un hover) se nulla è cambiato
   let filtro = 'tutto';
   let aperto = null;        // UN solo nodo aperto: nome del nodo sotto il puntatore o col fuoco
-  let fissato = null;       // nome del nodo fissato con un clic
+  let fissato = null;       // nome del nodo fissato con un clic, oppure 'obiettivo:' + slug (a goal slug may equal a node name)
   let selezione = null;     // task scelto (clic su un satellite)
   let nodiSvg = new Map();  // nome -> gruppo SVG
+  let obiettiviSvg = new Map();   // slug -> { G, linee }: kept apart from nodiSvg so apri/filo never see a goal
   let pos = new Map();      // nome -> {x, y, r}
   let dimensione = '';
   let vista = { k: 1, x: 0, y: 0 };   // zoom e spostamento: si conservano a ogni ridisegno
@@ -74,6 +75,16 @@
     return A;
   }
   const nodoPer = nome => dati && dati.nodi.find(n => n.nome === nome);
+  const PREFISSO_OBIETTIVO = 'obiettivo:';
+  const obiettiviDi = () => (dati && dati.obiettivi) || [];   // the empty fixture and an older server send no goals
+  const obiettivoPer = chiave => typeof chiave === 'string' && chiave.startsWith(PREFISSO_OBIETTIVO) ? obiettiviDi().find(o => PREFISSO_OBIETTIVO + o.slug === chiave) : undefined;
+  // The same words in the aria-label, the tooltip, the panel and the list.
+  function contoObiettivo(o) {
+    const c = o.conteggi;
+    return [c.pronti + (c.pronti === 1 ? ' pronto' : ' pronti'), c.in_corso + ' in corso', c.in_attesa + ' in attesa', c.fatti + (c.fatti === 1 ? ' fatto' : ' fatti')].join(' · ');
+  }
+  const NESSUN_OBIETTIVO = 'Nessun obiettivo nel piano: aggiungi obiettivo:<slug> a un task di docs/piano.md.';
+  const NESSUN_PASSO = 'Nessun passo nel piano con questo obiettivo.';
   function taglia(testo, max) {
     if (testo.length <= max) return testo;
     const t = testo.slice(0, max), i = t.lastIndexOf(' ');
@@ -108,7 +119,7 @@
   // ---- dati di prova (?prova=vuoto o ?prova=pieno): servono solo a verificare l'aspetto ----
   function prova(tipo) {
     if (tipo === 'vuoto') {
-      return { nodi: ['alfa', 'beta', 'gamma'].map(nome => ({ nome, tipo: 'progetto', priorita: 'da definire', haCartella: true, task: [] })), prossima: null, conteggi: { da_fare: 0, in_corso: 0, in_ritardo: 0, pronti: 0, in_attesa: 0 } };
+      return { nodi: ['alfa', 'beta', 'gamma'].map(nome => ({ nome, tipo: 'progetto', priorita: 'da definire', haCartella: true, task: [] })), obiettivi: [], prossima: null, conteggi: { da_fare: 0, in_corso: 0, in_ritardo: 0, pronti: 0, in_attesa: 0 } };
     }
     const nomi = ['Verificare il centralino con sessioni reali', 'Unire la PR della CI', 'Taratura del radar sui progetti attivi', 'Scrivere i test del parser', 'Inoltro email in configurazione', 'Aprire ai primi Club', 'Cron esterno per le notifiche', 'Pagare il dominio', 'Ridisegnare la pagina di accesso', 'Controllare i log del giovedì', 'Rispondere a chi ha scritto', 'Pubblicare le sei bozze', 'Conferma prima del voto', 'Android installa', 'Hardening del vault'];
     const stati = ['in_corso', 'da_fare', 'da_fare', 'da_fare', 'in_corso', 'da_fare', 'da_fare', 'da_fare', 'da_fare', 'da_fare', 'da_fare', 'da_fare', 'fatto', 'fatto', 'fatto'];
@@ -116,11 +127,20 @@
     const blocco = { ci: { id: 'pr-ci', vista: nomi[1], nodo: 'Prova piena', chi: null }, li: { id: 'bozze-li', vista: 'Pubblicare 6 bozze', nodo: 'linkedin', chi: null }, te: { id: 'dominio', vista: nomi[7], nodo: 'Prova piena', chi: 'te' } };
     const extra = { 1: { id: 'pr-ci' }, 2: { derivato: 'in_attesa', aspetta: [blocco.ci] }, 4: { derivato: 'incoerente', aspetta: [blocco.ci] }, 5: { derivato: 'in_attesa', aspetta: [blocco.li] },
       6: { derivato: 'errore', errore: 'riferimento', mancanti: ['cron-vecchio'] }, 7: { id: 'dominio', chi: 'te' }, 8: { derivato: 'in_attesa', aspetta: [blocco.te] }, 9: { derivato: 'errore', errore: 'ciclo' } };
+    // goals: «club» spans two nodes and every state, «linkedin» is defined with no task (and shares a node's name), «radar» is undefined
+    const obiettivoDi = { 0: 'club', 5: 'club', 13: 'club', 2: 'radar' };
     const task = nomi.map((testo, i) => ({ data: '2026-11-' + String(10 + i).padStart(2, '0'), testo, vista: testo, stato: stati[i], ritardo: i === 3,
-      id: null, chi: null, derivato: stati[i] === 'da_fare' ? 'pronto' : stati[i], errore: null, mancanti: [], aspetta: [], ...extra[i] }));
+      id: null, chi: null, derivato: stati[i] === 'da_fare' ? 'pronto' : stati[i], errore: null, mancanti: [], aspetta: [], obiettivo: obiettivoDi[i] || null, ...extra[i] }));
+    const nodi = [{ nome: 'Prova piena', tipo: 'progetto', priorita: 'alta', haCartella: true, task },
+      { nome: 'linkedin', tipo: 'argomento', priorita: null, haCartella: true, task: [{ data: '2026-11-12', testo: 'Pubblicare 6 bozze', vista: 'Pubblicare 6 bozze', stato: 'da_fare', ritardo: false, id: 'bozze-li', chi: null, derivato: 'pronto', errore: null, mancanti: [], aspetta: [], obiettivo: 'club' }] }];
+    // the same shape the server builds: task copies with their node, counts by visual state
+    const obiettivo = (slug, titolo, definito) => {
+      const ts = nodi.flatMap(n => n.task.filter(t => t.obiettivo === slug).map(t => ({ ...t, nodo: n.nome })));
+      const quanti = st => ts.filter(t => statoVisivo(t) === st).length;
+      return { slug, titolo, definito, progetti: [...new Set(ts.map(t => t.nodo))], task: ts, conteggi: { pronti: quanti('pronto'), in_corso: quanti('in_corso'), in_attesa: quanti('in_attesa'), fatti: quanti('fatto') } };
+    };
     return {
-      nodi: [{ nome: 'Prova piena', tipo: 'progetto', priorita: 'alta', haCartella: true, task },
-        { nome: 'linkedin', tipo: 'argomento', priorita: null, haCartella: true, task: [{ data: '2026-11-12', testo: 'Pubblicare 6 bozze', vista: 'Pubblicare 6 bozze', stato: 'da_fare', ritardo: false, id: 'bozze-li', chi: null, derivato: 'pronto', errore: null, mancanti: [], aspetta: [] }] }],
+      nodi, obiettivi: [obiettivo('club', 'Aprire ai primi Club <beta> & "amici" 🚀', true), obiettivo('linkedin', 'Pubblicare con costanza', true), obiettivo('radar', 'radar', false)],
       prossima: { nodo: 'Prova piena', ...task[0], motivo: 'in corso' }, conteggi: { da_fare: 11, in_corso: 2, in_ritardo: 1, pronti: 6, in_attesa: 5 },
     };
   }
@@ -152,21 +172,23 @@
   }
 
   // ---- layout a forze, deterministico: stessi dati, stessa mappa (angolo aureo, niente numeri casuali) ----
-  function layout(nodi, W, H) {
+  // `alto`: the height taken by the goal band, the nodes stay below it
+  function layout(nodi, W, H, alto) {
+    const cy = (H + alto) / 2;
     const N = nodi.map((n, i) => {
-      const a = i * 2.399, q = Math.min(W, H) * 0.4 * Math.sqrt((i + 0.5) / nodi.length);
-      return { n, x: W / 2 + Math.cos(a) * q, y: H / 2 + Math.sin(a) * q, r: Math.min(60, 30 + 5 * aperti(n)) };
+      const a = i * 2.399, q = Math.min(W, H - alto) * 0.4 * Math.sqrt((i + 0.5) / nodi.length);
+      return { n, x: W / 2 + Math.cos(a) * q, y: cy + Math.sin(a) * q, r: Math.min(60, 30 + 5 * aperti(n)) };
     });
     for (let passo = 0; passo < 300; passo++) {
       for (const a of N) {
-        a.x += (W / 2 - a.x) * 0.004; a.y += (H / 2 - a.y) * 0.004;
+        a.x += (W / 2 - a.x) * 0.004; a.y += (cy - a.y) * 0.004;
         for (const b of N) {
           if (a === b) continue;
           const dx = a.x - b.x, dy = a.y - b.y, d = Math.hypot(dx, dy) || 1, min = a.r + b.r + 120;
           if (d < min) { const f = (min - d) / d * 0.25; a.x += dx * f; a.y += dy * f; }
         }
         a.x = Math.max(a.r + 40, Math.min(W - a.r - 40, a.x));
-        a.y = Math.max(a.r + 70, Math.min(H - a.r - 56, a.y));
+        a.y = Math.max(a.r + 70 + alto, Math.min(H - a.r - 56, a.y));
       }
     }
     return N;
@@ -214,7 +236,7 @@
     }, { passive: false });
     svg.addEventListener('pointerdown', e => {
       if (e.button > 0) return;
-      const sfondo = !e.target.closest('.nodo, .sat, .azione');
+      const sfondo = !e.target.closest('.nodo, .sat, .azione, .obiettivo');
       if (!punti.size) { trascinato = false; spostato = 0; daSfondo = sfondo; }
       if (!punti.size && !sfondo) return;   // un clic su un nodo resta un clic
       punti.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -258,9 +280,10 @@
 
   // ---- filtri ----
   function visibili() {
-    const f = dati.nodi.filter(n => filtro === 'progetti' ? n.tipo === 'progetto' : filtro === 'argomenti' ? n.tipo === 'argomento' : filtro === 'aperti' ? aperti(n) > 0 : true);
-    return f;
+    const toccati = filtro === 'obiettivi' ? new Set(obiettiviDi().flatMap(o => o.progetti)) : null;   // only the nodes a goal touches
+    return dati.nodi.filter(n => filtro === 'progetti' ? n.tipo === 'progetto' : filtro === 'argomenti' ? n.tipo === 'argomento' : filtro === 'aperti' ? aperti(n) > 0 : toccati ? toccati.has(n.nome) : true);
   }
+  const obiettiviVisibili = () => ['tutto', 'aperti', 'obiettivi'].includes(filtro) ? obiettiviDi() : [];
 
   // ---- disegno ----
   function disegna() {
@@ -268,7 +291,7 @@
     if (!dati || !svg) return;
     const W = svg.clientWidth, H = svg.clientHeight;
     dimensione = W + 'x' + H;
-    nodiSvg = new Map(); pos = new Map();
+    nodiSvg = new Map(); pos = new Map(); obiettiviSvg = new Map();
     const sfondo = s('rect', { class: 'mappa-sfondo', x: 0, y: 0, width: W, height: H });
     sfondo.addEventListener('pointerenter', () => { if (!fuocoNeiSatelliti()) apri(fissato); });
     sfondo.addEventListener('click', () => { if (!trascinato) deseleziona(); });
@@ -279,7 +302,17 @@
     const mondo = s('g', { id: 'mappa-mondo' });   // tutto ciò che si zooma: nodi e satelliti
     svg.appendChild(mondo);
     const prossimo = dati.prossima && dati.prossima.nodo;
-    for (const o of layout(visibili(), W, H)) {
+    // Goal band under the header: rounded boxes in rows, as many per row as the width allows; the nodes are laid out below it
+    const obiettivi = obiettiviVisibili(), OB = { h: 58, gap: 12, min: 150, max: 220 };
+    const testa = document.querySelector('.mappa-testa'), y0 = 26 + (testa ? testa.offsetHeight : 36);
+    const colonne = Math.max(1, Math.floor((W - 40 + OB.gap) / (OB.min + OB.gap))), k = Math.min(obiettivi.length, colonne);
+    const largo = k ? Math.min(OB.max, (W - 40 - (k - 1) * OB.gap) / k) : 0, x0 = (W - k * largo - (k - 1) * OB.gap) / 2;
+    const fondoFascia = y0 + Math.ceil(obiettivi.length / colonne) * (OB.h + OB.gap) - OB.gap;
+    const strato = s('g', { id: 'mappa-obiettivi' });   // first child of the world: the goal lines run under the nodes
+    mondo.appendChild(strato);
+    if (filtro === 'obiettivi' && !obiettiviDi().length) mondo.appendChild(s('text', { class: 'mappa-vuota', x: W / 2, y: H / 2 }, [NESSUN_OBIETTIVO]));
+    // 70 is the room the layout already keeps for the header; past the band, 24 more for the halo
+    for (const o of layout(visibili(), W, H, obiettivi.length ? fondoFascia + 24 - 70 : 0)) {
       const { n, x, y, r } = o;
       pos.set(n.nome, { x, y, r });
       const daDecidere = !!(n.harness && n.harness.stato === 'da decidere');   // contorno tratteggiato: manca la decisione sull'harness
@@ -313,10 +346,54 @@
       nodiSvg.set(n.nome, G);
       mondo.appendChild(G);
     }
+    const linee = [], scatole = [];
+    obiettivi.forEach((o, i) => {
+      const x = x0 + (i % colonne) * (largo + OB.gap), y = y0 + Math.floor(i / colonne) * (OB.h + OB.gap), ax = x + largo / 2, ay = y + OB.h;
+      const sue = o.progetti.filter(nome => pos.has(nome)).map(nome => {   // a node hidden by the filter gets no line: the panel still lists its steps
+        const p = pos.get(nome), d = Math.hypot(ax - p.x, ay - p.y) || 1;
+        return s('line', { class: 'obiettivo-linea', x1: ax.toFixed(1), y1: ay.toFixed(1), x2: (p.x + (ax - p.x) / d * (p.r + 6)).toFixed(1), y2: (p.y + (ay - p.y) / d * (p.r + 6)).toFixed(1) });
+      });
+      const c = o.conteggi, tot = c.fatti + c.in_corso + c.pronti + c.in_attesa;
+      const etichetta = o.titolo + ', obiettivo: ' + contoObiettivo(o) + (o.definito ? '' : ', non definito');
+      const G = s('g', { class: 'obiettivo' + (o.definito ? '' : ' non-definito'), tabindex: 0, role: 'button', 'aria-label': etichetta });
+      G.append(s('title', {}, [etichetta]), s('rect', { class: 'obiettivo-box', x, y, width: largo, height: OB.h, rx: 10 }),
+        s('text', { class: 'obiettivo-titolo', x: x + 12, y: y + 21 }, [taglia(o.titolo, Math.floor((largo - 24) / 6.3))]));
+      // progress: done, in progress, ready, waiting, with the strokes of the node rings (waiting dashed); the line below says it in words
+      const bx = x + 12, bw = largo - 24, by = y + 33;
+      G.append(s('path', { class: 'obiettivo-traccia', d: `M${bx} ${by}H${bx + bw}` }));
+      let da = bx;
+      for (const [st, quanti] of [['fatto', c.fatti], ['in_corso', c.in_corso], ['pronto', c.pronti], ['in_attesa', c.in_attesa]]) {
+        if (!quanti) continue;
+        const a = da + quanti / tot * bw;
+        G.append(s('path', { class: 'arco st-' + st, d: `M${(da + 1).toFixed(1)} ${by}H${Math.max(da + 1, a - 1).toFixed(1)}` }));
+        da = a;
+      }
+      G.append(s('text', { class: 'obiettivo-sub', x: x + 12, y: y + 50 }, [(o.definito ? '' : 'non definito · ') + (tot ? c.fatti + ' di ' + tot + ' fatti' : 'nessun passo')]));
+      G.addEventListener('click', () => scegliObiettivo(o.slug));
+      G.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); scegliObiettivo(o.slug); } });
+      obiettiviSvg.set(o.slug, { G, linee: sue });
+      linee.push(...sue); scatole.push(G);
+    });
+    strato.append(...linee, ...scatole);
     mondo.appendChild(s('g', { id: 'mappa-dipendenze' }));  // the thread of the selected waiting task, under the satellites
     mondo.appendChild(s('g', { id: 'mappa-satelliti' }));   // sempre ultimo: sta sopra tutti i nodi
     limita(); applicaVista();
+    evidenziaObiettivo();
     const da = aperto; aperto = null; apri(da, true);
+  }
+  // A selected goal: its lines turn solid and the nodes it does not touch fade. Only classes, so the keyboard focus stays put.
+  function evidenziaObiettivo() {
+    const svg = $('mappa-svg');
+    if (!svg) return;
+    // Dim only when the selected goal is drawn: with a filter that hides goals the panel stays but the map must not stay faded
+    const o = obiettiviVisibili().includes(obiettivoPer(fissato)) ? obiettivoPer(fissato) : undefined;
+    svg.classList.toggle('con-obiettivo', !!o);
+    for (const [slug, { G, linee }] of obiettiviSvg) {
+      const su = !!o && o.slug === slug;
+      G.classList.toggle('scelto', su);
+      linee.forEach(l => l.classList.toggle('scelta', su));
+    }
+    for (const [nome, G] of nodiSvg) G.classList.toggle('coinvolto', !!o && o.progetti.includes(nome));
   }
 
   // satelliti del nodo aperto: tutti gli aperti, gli ultimi 2 fatti (in ordine di file) e «+k fatti»
@@ -425,6 +502,7 @@
     disegnaSatelliti(aperto);
   }
   function scegli(nome) { fissato = nome; selezione = null; apri(nome); pannello(); }
+  function scegliObiettivo(slug) { fissato = PREFISSO_OBIETTIVO + slug; selezione = null; apri(null); pannello(); }
   // fissa il nodo, seleziona il task e porta il pannello su di lui: la lista dei task può essere più lunga del pannello
   function scegliTask(nome, t) {
     fissato = nome; selezione = t; apri(nome); pannello();
@@ -434,20 +512,27 @@
   function deseleziona() { fissato = null; selezione = null; apri(null); pannello(); }
 
   // ---- lista equivalente (lettori di schermo; sotto i 760px prende il posto della mappa) ----
+  // one task of the list, for nodes and goals alike; under a goal the row also names its node
+  function rigaLista(n, t, conNodo) {
+    return h('li', 'task-lista st-' + statoVisivo(t) + (t.derivato === 'errore' ? ' errore' : ''), [
+      h('i', 'punto st-' + statoVisivo(t)), bottone(t.vista, 'link' + (t.ritardo ? ' ritardo' : ''), () => { scegliTask(n.nome, t); $('mappa-dettaglio').scrollIntoView({ block: 'nearest' }); }),
+      h('span', 'sub', [NOME_VISIVO[statoVisivo(t)] + (t.data ? ' · ' + giornoBreve(t.data) : '') + (conNodo ? ' · ' + n.nome : '')]),
+      ...motivi(t, n).map(m => h('span', 'sub motivo', [m])),
+    ]);
+  }
   function lista() {
     const ul = $('mappa-lista');
     if (!ul || !dati) return;
-    ul.replaceChildren(...visibili().map(n => {
-      const ts = filtro === 'aperti' ? n.task.filter(t => t.stato !== 'fatto') : n.task;
-      return h('li', '', [
-        h('h3', '', [n.nome, h('span', 'tipo-nodo', [n.tipo === 'senza' ? 'da etichettare' : n.tipo]), h('span', 'sub', [contoAperti(n)])]),
-        ...gruppi(ts, t => h('li', 'task-lista st-' + statoVisivo(t) + (t.derivato === 'errore' ? ' errore' : ''), [
-          h('i', 'punto st-' + statoVisivo(t)), bottone(t.vista, 'link' + (t.ritardo ? ' ritardo' : ''), () => { scegliTask(n.nome, t); $('mappa-dettaglio').scrollIntoView({ block: 'nearest' }); }),
-          h('span', 'sub', [NOME_VISIVO[statoVisivo(t)] + (t.data ? ' · ' + giornoBreve(t.data) : '')]),
-          ...motivi(t, n).map(m => h('span', 'sub motivo', [m])),
-        ]), 'h4'),
-      ]);
-    }));
+    const daMostrare = ts => filtro === 'aperti' ? ts.filter(t => t.stato !== 'fatto') : ts;
+    const obiettivi = obiettiviVisibili().map(o => h('li', '', [
+      h('h3', '', [o.titolo, h('span', 'tipo-nodo', [o.definito ? 'obiettivo' : 'obiettivo non definito']), h('span', 'sub', [contoObiettivo(o)])]),
+      ...(o.task.length ? gruppi(daMostrare(o.task), t => rigaLista(nodoPer(t.nodo), t, true), 'h4') : [h('p', 'vuoto', [NESSUN_PASSO])]),
+    ]));
+    const senza = filtro === 'obiettivi' && !obiettiviDi().length ? [h('li', 'vuoto', [NESSUN_OBIETTIVO])] : [];
+    ul.replaceChildren(...obiettivi, ...senza, ...visibili().map(n => h('li', '', [
+      h('h3', '', [n.nome, h('span', 'tipo-nodo', [n.tipo === 'senza' ? 'da etichettare' : n.tipo]), h('span', 'sub', [contoAperti(n)])]),
+      ...gruppi(daMostrare(n.task), t => rigaLista(n, t), 'h4'),
+    ])));
   }
 
   // ---- pannello: prossima azione oppure dettaglio del nodo fissato ----
@@ -459,11 +544,13 @@
     }));
   }
   const apriPost = () => { const b = document.querySelector('.schede button[data-vista="post"]'); if (b) b.click(); };   // le bozze si decidono in Post, non da qui
-  function rigaTask(n, t) {
+  // `conNodo`: in a goal panel the row names its node; `n` is always the task's own node, so «Avvia» opens that project's folder
+  function rigaTask(n, t, conNodo) {
     const sel = selezione && selezione.testo === t.testo && selezione.data === t.data;
     const vis = statoVisivo(t), tuo = t.chi === 'te' && (t.derivato === 'pronto' || t.derivato === 'in_corso');
     const li = h('li', 'task st-' + vis + (t.derivato === 'incoerente' ? ' incoerente' : '') + (t.derivato === 'errore' ? ' errore' : '') + (sel ? ' scelto' : ''), [
       h('span', 'task-testo' + (t.ritardo ? ' ritardo' : ''), [h('i', 'punto st-' + vis), t.vista, t.data ? h('span', 'sub', [' ' + (t.ritardo ? 'dal ' : '') + giornoBreve(t.data)]) : null]),
+      conNodo ? h('span', 'sub', [n.nome]) : null,
       ...motivi(t, n).map(m => h('span', 'sub motivo', [m])),
       h('span', 'riga-azioni', t.bozza ? [bottone('Apri in Post', '', apriPost)] : [selettore(n, t),
         n.haCartella && avviabile(t) ? bottone(t.derivato === 'in_corso' ? 'Riavvia' : 'Avvia', '', () => conferma(n, t)) : tuo ? h('span', 'sub tocca-a-te', ['Tocca a te']) : null]),
@@ -490,6 +577,16 @@
         puoAggiungere(n) ? bottone('Aggiungi un task', '', () => nuovoTask(n)) : null,
         bottone('Torna alla prossima azione', '', deseleziona),
       ]),
+    ];
+  }
+  // Panel of a goal: its steps across projects, in the same groups as a node
+  function dettaglioObiettivo(o) {
+    return [
+      h('h2', '', [o.titolo, h('span', 'sub', ['obiettivo' + (o.progetti.length ? ' · ' + o.progetti.join(', ') : '')])]),
+      o.task.length ? h('p', 'sub conto-nodo', [contoObiettivo(o)]) : null,
+      o.definito ? null : h('p', 'sub', ['Obiettivo non definito. Aggiungilo in docs/obiettivi.md con la riga «- ' + o.slug + ': <titolo>».']),
+      ...(o.task.length ? gruppi(o.task, t => rigaTask(nodoPer(t.nodo), t, true), 'h3') : [h('p', 'vuoto', [NESSUN_PASSO])]),
+      h('div', 'riga-azioni', [bottone('Torna alla prossima azione', '', deseleziona)]),
     ];
   }
   function prossimaAzione() {
@@ -560,14 +657,14 @@
   }
   function pannello() {
     if (!dati || !$('mappa-dettaglio')) return;
-    const n = fissato && nodoPer(fissato);
-    $('mappa-dettaglio').replaceChildren(...(n ? dettaglioNodo(n) : prossimaAzione()).filter(Boolean));
+    const o = obiettivoPer(fissato), n = fissato && nodoPer(fissato);
+    $('mappa-dettaglio').replaceChildren(...(o ? dettaglioObiettivo(o) : n ? dettaglioNodo(n) : prossimaAzione()).filter(Boolean));
     // le righe in ritardo dei prossimi giorni
     const g = giorni.slice(0, 5);
     $('prossimi-giorni').replaceChildren(...(g.length ? [h('h2', '', ['Prossimi giorni']), h('ul', 'prossimi', g.map(v => h('li', '', [
       h('span', '', [v.vista || v.testo]), h('span', 'quando' + (v.inRitardo ? ' ritardo' : ''), [v.inRitardo ? 'dal ' + giornoBreve(v.data) : giornoBreve(v.data)]),
     ])))] : []));
-    filo();
+    filo(); evidenziaObiettivo();
   }
 
   // ---- azioni ----
@@ -807,8 +904,9 @@
     saluto(new Date());
     if (nuova === impronta) return;           // niente è cambiato: non interrompo hover e animazioni
     impronta = nuova;
-    if (fissato && !nodoPer(fissato)) fissato = null;
-    if (selezione && !(nodoPer(fissato) || { task: [] }).task.some(t => t.testo === selezione.testo && t.data === selezione.data)) selezione = null;
+    const scelto = nodoPer(fissato) || obiettivoPer(fissato);   // a goal that is gone (or a node) drops the stale key
+    if (!scelto) fissato = null;
+    if (selezione && !(scelto && scelto.task.some(t => t.testo === selezione.testo && t.data === selezione.data))) selezione = null;
     disegna(); lista(); pannello();
   }
 

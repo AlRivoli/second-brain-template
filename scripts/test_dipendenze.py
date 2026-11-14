@@ -126,5 +126,40 @@ class LeggiProblemiTest(unittest.TestCase):
                 self.assertEqual(d.problemi(voci), [])
 
 
+class ObiettiviTest(unittest.TestCase):
+    def test_leggi_obiettivi(self):
+        o, p = d.leggi_obiettivi("# Obiettivi\n\n- harness: Harness per tutti i progetti\n- mappa: Mappa <con> \"obiettivi\" & repo\n")
+        self.assertEqual(list(o.items()), [("harness", "Harness per tutti i progetti"), ("mappa", "Mappa <con> \"obiettivi\" & repo")])
+        self.assertEqual(p, [])
+
+    def test_leggi_obiettivi_problemi(self):
+        _, p = d.leggi_obiettivi("- Harness: X\n- a: \n- a: uno\n- a: due\n- b: " + "x" * 121 + "\n")
+        self.assertEqual([r for r, _ in p], [1, 2, 4, 5])
+
+    def test_leggi_obiettivi_ignora_il_resto_e_accetta_120_caratteri(self):
+        o, p = d.leggi_obiettivi("# T\ntesto - a: b\n  - a: b\n- a: " + "x" * 120 + "\n")
+        self.assertEqual((list(o), p), (["a"], []))
+
+    def test_leggi_obiettivi_con_bom_iniziale_definisce_la_riga_1(self):
+        o, p = d.leggi_obiettivi("\ufeff- a: uno\n- b: due\n")
+        self.assertEqual((list(o), p), (["a", "b"], []))
+
+    def test_leggi_obiettivi_rifiuta_caratteri_di_controllo_e_direzione(self):
+        for cattivo in ("\u202e", "\u2066", "\u2069", "\x07", "\u200b"):
+            with self.subTest(carattere=hex(ord(cattivo))):
+                o, p = d.leggi_obiettivi(f"- a: uno{cattivo}due\n- b: ok\n")
+                self.assertEqual((list(o), p), (["b"], [(1, "titolo con caratteri di controllo o di direzione: toglili")]))
+
+    def test_riga_non_valida_dice_come_scriverla(self):
+        _, p = d.leggi_obiettivi("- senza due punti\n")
+        self.assertEqual(p, [(1, "riga non valida: scrivi `- slug: titolo`")])
+
+    def test_problemi_obiettivo_non_definito(self):
+        voci = d.leggi_voci("## A\n- [ ] uno obiettivo:mappa\n- [ ] due obiettivo:altro\n")
+        self.assertEqual([r for r, _ in d.problemi(voci, {"mappa": "Mappa"})], [3])
+        self.assertEqual(d.problemi(voci), [])
+        self.assertIn("obiettivo:altro non è definito in docs/obiettivi.md: aggiungi `- altro: <titolo>`", d.problemi(voci, {})[1][1])
+
+
 if __name__ == "__main__":
     unittest.main()

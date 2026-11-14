@@ -99,6 +99,22 @@ class HtmlDashboard(unittest.TestCase):
             self.assertIn(atteso, js)
         self.assertRegex(css, r"\.arco\.st-in_attesa[^}]*stroke-dasharray")  # in attesa si legge dal tratteggio, non solo dal colore (il tratteggio dell'harness esiste già e non conta)
 
+    def test_la_mappa_disegna_gli_obiettivi(self):
+        js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")
+        for atteso in ("mappa-obiettivi", "'obiettivi', 'Obiettivi'", "obiettivo:", "obiettivoPer", "non definito", "Nessun passo nel piano con questo obiettivo"):
+            self.assertIn(atteso, js)
+        self.assertRegex(css, r"\.obiettivo\b")
+        # td.obiettivo (Progetti table) already matches the line above: the goal node itself must exist, dashed when undefined
+        self.assertRegex(css, r"\.obiettivo\.non-definito [^}]*stroke-dasharray")
+        # a selected goal hidden by the filter must not leave the map dimmed: the dimming is tied to the goal being drawn
+        fn = js[js.index("function evidenziaObiettivo"):js.index("// satelliti del nodo aperto")]
+        self.assertIn("obiettiviVisibili().includes(obiettivoPer(fissato))", fn)
+        self.assertNotIn("const o = obiettivoPer(fissato)", fn)
+        # launched from a goal panel, a task still starts in its own project folder: the row is built with the task's node,
+        # and that row's «Avvia» is conferma(n, t), i.e. conferma(nodoPer(t.nodo), t)
+        self.assertIn("rigaTask(nodoPer(t.nodo), t, true)", js)
+        self.assertIn("() => conferma(n, t))", js[js.index("function rigaTask"):js.index("function dettaglioNodo")])
+
     def test_in_ritardo_e_bloccato_resta_rosso(self):
         # a late task that waits is never the next action: the spec wants it flagged, and the grey of «in attesa» must not hide the red
         js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")

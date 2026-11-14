@@ -1059,7 +1059,7 @@ def task_social(vault):
                 out.append({"data": None, "testo": rete + "/" + b["nome"], "vista": rete.capitalize().replace("Linkedin", "LinkedIn") + ": " + titolo,
                             "stato": "da_fare", "ritardo": False, "bozza": rete, "_progetto": b["progetto"],
                             # drafts are outside the dependency graph: always ready, nothing to wait for
-                            "id": None, "chi": None, "derivato": "pronto", "errore": None, "mancanti": [], "aspetta": []})
+                            "id": None, "chi": None, "derivato": "pronto", "errore": None, "mancanti": [], "aspetta": [], "obiettivo": None})
     return out
 
 
@@ -1118,7 +1118,7 @@ def mappa(adesso, piano_file=None, vault=None):
         d = derivati[i]
         t = {"data": v["data"], "testo": v["testo"], "vista": v["vista"], "stato": v["stato"], "ritardo": ritardo,
              "id": v["marcatori"].get("id"), "chi": v["marcatori"].get("chi"), "derivato": d["derivato"],
-             "errore": d["errore"], "mancanti": d["mancanti"], "aspetta": []}
+             "errore": d["errore"], "mancanti": d["mancanti"], "aspetta": [], "obiettivo": v["marcatori"].get("obiettivo")}
         nodo["task"].append(t)
         task_di[i], nodo_di[i] = t, nodo
         if aperta:
@@ -1127,6 +1127,25 @@ def mappa(adesso, piano_file=None, vault=None):
         if t:
             t["aspetta"] = [{"id": voci[j]["marcatori"].get("id"), "vista": voci[j]["vista"], "nodo": nodo_di[j]["nome"],
                              "chi": voci[j]["marcatori"].get("chi")} for j in derivati[i]["aspetta"]]
+    # Goals: one pass over the tasks grouping by slug (O(V) time and space). Tasks stay in their nodes; a goal holds shallow copies
+    # (taken after "aspetta" is filled) with the node name, so the header counts and "Avvia" never see a task twice.
+    try:
+        definiti = dipendenze.leggi_obiettivi((vault / "docs" / "obiettivi.md").read_text(encoding="utf-8-sig", errors="replace"))[0]  # problems are verify's job; a BOM or a stray byte must not undefine every goal
+    except (OSError, ValueError):
+        definiti = {}
+    per_obiettivo = {}
+    for t, nodo in zip(task_di, nodo_di):
+        if t and t["obiettivo"]:
+            per_obiettivo.setdefault(t["obiettivo"], []).append({**t, "nodo": nodo["nome"]})
+    gruppo = {"pronto": "pronti", "in_corso": "in_corso", "incoerente": "in_corso", "in_attesa": "in_attesa", "errore": "in_attesa", "fatto": "fatti"}
+    obiettivi = []
+    for slug in [*definiti, *(s for s in per_obiettivo if s not in definiti)]:  # file order first, then the undefined ones in plan order
+        task = per_obiettivo.get(slug, [])
+        conteggi = dict.fromkeys(("pronti", "in_corso", "in_attesa", "fatti"), 0)
+        for t in task:
+            conteggi[gruppo[t["derivato"]]] += 1
+        obiettivi.append({"slug": slug, "titolo": definiti.get(slug, slug), "definito": slug in definiti,
+                          "progetti": list(dict.fromkeys(t["nodo"] for t in task)), "task": task, "conteggi": conteggi})
     # What to do next: not what waits on something, not what only the user can do
     scelta = _prossima([r for r in aperte if r[1]["derivato"] in ("pronto", "in_corso") and r[1]["chi"] != "te"], adesso)
     prossima = None
@@ -1136,7 +1155,7 @@ def mappa(adesso, piano_file=None, vault=None):
     conta = lambda f: sum(1 for r in aperte if f(r))
     aperti = lambda n: sum(1 for t in n["task"] if t["stato"] != "fatto")
     ordinati = sorted(nodi.values(), key=lambda n: (not (scelta and n is scelta[0]), -aperti(n), n["nome"].lower()))
-    out = {"nodi": ordinati, "prossima": prossima, "nome": nome_per_saluto(vault),
+    out = {"nodi": ordinati, "prossima": prossima, "nome": nome_per_saluto(vault), "obiettivi": obiettivi,
            "conteggi": {"da_fare": conta(lambda r: r[1]["stato"] == "da_fare"),
                         "in_corso": conta(lambda r: r[1]["stato"] == "in_corso"),
                         "in_ritardo": conta(lambda r: r[2]),

@@ -190,8 +190,10 @@ def vault_finto(piano):
     return v
 
 
-def mappa_di(piano):
+def mappa_di(piano, obiettivi=None):
     v = vault_finto(piano)
+    if obiettivi is not None:
+        (v / "docs" / "obiettivi.md").write_text(obiettivi, encoding="utf-8")
     return server.mappa(ADESSO, piano_file=v / "docs" / "piano.md", vault=v)
 
 
@@ -357,6 +359,60 @@ def con_bozze(v, **per_rete):
         (v / "content" / rete).mkdir(parents=True, exist_ok=True)
         for nome, titolo in bozze.items():
             (v / "content" / rete / nome).write_text("# %s\n\nTesto.\n" % titolo, encoding="utf-8")
+
+
+class ObiettiviMappaTest(unittest.TestCase):
+    def test_obiettivi_tra_progetti(self):
+        m = mappa_di("## A\n- [ ] #alfa uno id:u1 obiettivo:mappa\n- [ ] #beta due dopo:u1 obiettivo:mappa\n- [x] #alfa tre obiettivo:mappa\n- [ ] #alfa quattro obiettivo:zz\n",
+                     obiettivi="- mappa: Mappa con obiettivi\n- vuoto: Senza passi\n")
+        o = {x["slug"]: x for x in m["obiettivi"]}
+        self.assertEqual([x["slug"] for x in m["obiettivi"]], ["mappa", "vuoto", "zz"])
+        self.assertEqual((o["mappa"]["titolo"], o["mappa"]["definito"], o["mappa"]["progetti"]), ("Mappa con obiettivi", True, ["alfa", "beta"]))
+        self.assertEqual(o["mappa"]["conteggi"], {"pronti": 1, "in_corso": 0, "in_attesa": 1, "fatti": 1})
+        self.assertEqual(o["mappa"]["task"][1]["nodo"], "beta")
+        self.assertEqual((o["vuoto"]["task"], o["zz"]["titolo"], o["zz"]["definito"]), ([], "zz", False))
+
+    def test_obiettivi_non_duplicano_i_task(self):
+        m = mappa_di("## A\n- [ ] #alfa uno obiettivo:mappa\n", obiettivi="- mappa: M\n")
+        self.assertEqual(sum(len(n["task"]) for n in m["nodi"] if n["nome"] != "Social"), 1)
+        self.assertEqual(m["conteggi"]["pronti"], 1)
+        self.assertEqual([t.get("nodo") for n in m["nodi"] for t in n["task"]], [None])  # the extra key lives only on the copies
+
+    def test_obiettivi_letti_anche_con_bom_o_byte_non_utf8(self):
+        piano = "## A\n- [ ] #alfa uno obiettivo:uno\n- [ ] #alfa due obiettivo:due\n"
+        for nome, grezzo in (("bom", "\ufeff- uno: Primo\n- due: Secondo\n".encode("utf-8")),
+                             ("byte", b"- uno: Primo\n- due: Sec\xffondo\n- tre: Terzo\n")):
+            with self.subTest(nome):
+                v = vault_finto(piano)
+                (v / "docs" / "obiettivi.md").write_bytes(grezzo)
+                m = server.mappa(ADESSO, piano_file=v / "docs" / "piano.md", vault=v)
+                self.assertEqual([(o["slug"], o["definito"]) for o in m["obiettivi"]][:2], [("uno", True), ("due", True)])
+
+    def test_task_porta_l_obiettivo_e_senza_file_la_mappa_regge(self):
+        m = mappa_di("## A\n- [ ] #alfa uno obiettivo:mappa\n- [ ] #alfa due\n")  # no docs/obiettivi.md
+        t = {x["vista"]: x for n in m["nodi"] for x in n["task"]}
+        self.assertEqual((t["uno"]["obiettivo"], t["due"]["obiettivo"]), ("mappa", None))
+        self.assertEqual([(o["slug"], o["definito"]) for o in m["obiettivi"]], [("mappa", False)])
+
+    def test_senza_obiettivi_la_lista_e_vuota_e_le_bozze_non_ne_hanno(self):
+        self.assertEqual(mappa_di("## A\n- [ ] #alfa uno\n")["obiettivi"], [])
+        v = vault_finto("")
+        (v / "content" / "linkedin").mkdir(parents=True)
+        (v / "content" / "linkedin" / "post.md").write_text("# Bozza LinkedIn: titolo\n\ntesto\n", encoding="utf-8")
+        bozze = server.task_social(v)
+        self.assertTrue(bozze)
+        self.assertEqual([t["obiettivo"] for t in bozze], [None] * len(bozze))
+
+    def test_conteggi_in_corso_e_errore(self):
+        m = mappa_di("## A\n- [~] #alfa a obiettivo:g\n- [~] #alfa b dopo:d1 obiettivo:g\n- [ ] #alfa c id:c1 dopo:c1 obiettivo:g\n- [ ] #alfa d id:d1 obiettivo:g\n")
+        derivati = [t["derivato"] for t in m["obiettivi"][0]["task"]]
+        self.assertEqual(sorted(derivati), ["errore", "in_corso", "incoerente", "pronto"])
+        self.assertEqual(m["obiettivi"][0]["conteggi"], {"pronti": 1, "in_corso": 2, "in_attesa": 1, "fatti": 0})
+
+    def test_voce_senza_tag_resta_in_senza_nodo(self):
+        m = mappa_di("## A\n- [ ] senza tag obiettivo:g\n")
+        self.assertEqual(m["obiettivi"][0]["task"][0]["nodo"], "Senza nodo")
+        self.assertEqual(m["obiettivi"][0]["progetti"], ["Senza nodo"])
 
 
 class SocialTest(unittest.TestCase):
@@ -648,6 +704,14 @@ class AvvioTest(unittest.TestCase):
         r, chiamate = self.avvia(v, av, "#alfa b dopo:a1")
         self.assertTrue(r["avviato"])
         self.assertEqual(len(chiamate), 1)
+
+    def test_avvia_task_con_obiettivo_non_e_doppia(self):
+        v, av = self.prepara("## A\n- [ ] #alfa uno obiettivo:mappa\n")
+        (v / "docs" / "obiettivi.md").write_text("- mappa: M\n", encoding="utf-8")
+        r, chiamate = self.avvia(v, av, "#alfa uno obiettivo:mappa")
+        self.assertTrue(r["avviato"])
+        self.assertEqual(len(chiamate), 1)
+        self.assertEqual(r["cartella"], str(v / "repo-alfa"))
 
     def test_avvio_pulisce_i_file_vecchi(self):
         v, av = self.prepara()

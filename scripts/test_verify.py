@@ -100,6 +100,31 @@ class VerifyTest(unittest.TestCase):
             code, out = run_verify(tmp)
             self.assertEqual((code, out.strip()), (0, 'OK'))
 
+    def test_obiettivi_non_definiti_sono_avvisi(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), extra={'docs/piano.md': '## A\n- [ ] a obiettivo:zz\n'})
+            code, out = run_verify(tmp)
+            self.assertEqual(code, 0, out)
+            self.assertIn('docs/piano.md:2: avviso: obiettivo:zz', out)
+            self.assertIn('OK', out)
+
+    def test_obiettivo_definito_o_non_usato_non_da_avvisi(self):
+        for extra in ({'docs/piano.md': '## A\n- [ ] a obiettivo:zz\n', 'docs/obiettivi.md': '- zz: Zeta\n'},
+                      {'docs/piano.md': '## A\n- [ ] a\n'},
+                      {'docs/piano.md': '## A\n- [ ] a\n', 'docs/obiettivi.md': '# Obiettivi\n'}):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as tmp:
+                make_vault(pathlib.Path(tmp), extra=extra)
+                code, out = run_verify(tmp)
+                self.assertEqual((code, out.strip()), (0, 'OK'))
+
+    def test_righe_non_valide_di_obiettivi_sono_avvisi(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), extra={'docs/obiettivi.md': '- Zz: X\n'})
+            code, out = run_verify(tmp)
+            self.assertEqual(code, 0, out)
+            self.assertIn('docs/obiettivi.md:1: avviso:', out)
+            self.assertIn('OK', out)
+
     def test_readme_che_non_cita_un_job_o_un_comando(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

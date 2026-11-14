@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Marcatori di piano.md (id, dopo, ...) e stato derivato dei task. Modulo puro: niente I/O."""
 import re
+import unicodedata
 
 # `(.*\S)` instead of a lazy `(.+?)\s*$`: the lazy form re-scans a whitespace run at every step (quadratic)
 VOCE_PIANO = re.compile(r"^- \[( |x|X|~)\] (.*\S)\s*$")
@@ -17,6 +18,9 @@ _VALORI = {
     "chi": (re.compile(r"te"), False),
     "stima": (re.compile(r"\d+(?:[.,]\d+)?[hg]"), False),
 }
+# One goal line of docs/obiettivi.md: `- slug: titolo`
+_RIGA_OBIETTIVO = re.compile(r"^- (%s):(.*)$" % _ID)
+_TITOLO_MAX = 120
 _ULTIMO_TOKEN = re.compile(r"\s(\S+)$")
 # A marker-like token left in the text after the trailing markers were split off
 _QUASI_MARCATORE = re.compile(r"\b(?:%s):\S*" % "|".join(CHIAVI))
@@ -159,8 +163,41 @@ def leggi_voci(testo):
     return voci
 
 
-def problemi(voci):
+def leggi_obiettivi(testo):
+    """Goal lines of docs/obiettivi.md: ({slug: titolo} in file order, [(riga, message saying what to fix)]).
+
+    Only lines starting with `- ` count; headings and prose are ignored. A line with a problem is reported
+    and not defined, except a duplicate slug, which keeps its first definition. O(n) time and space.
+    """
+    obiettivi, trovati, righe = {}, [], {}
+    # A BOM left by an editor would hide line 1 from the `- ` check below
+    for numero, riga in enumerate(testo.removeprefix("\ufeff").splitlines(), 1):
+        if not riga.startswith("- "):
+            continue
+        m = _RIGA_OBIETTIVO.match(riga.rstrip())
+        if not m:
+            trovati.append((numero, "riga non valida: scrivi `- slug: titolo`"))
+            continue
+        slug, titolo = m.group(1), m.group(2).strip()
+        if slug in righe:
+            trovati.append((numero, f"obiettivo:{slug} è già definito alla riga {righe[slug]}: usa uno slug diverso"))
+        elif not titolo:
+            trovati.append((numero, f"obiettivo:{slug} senza titolo: scrivi `- {slug}: titolo`"))
+        elif len(titolo) > _TITOLO_MAX:
+            trovati.append((numero, f"il titolo di {slug} ha {len(titolo)} caratteri: al massimo {_TITOLO_MAX}"))
+        elif any(unicodedata.category(c) in ("Cc", "Cf") for c in titolo):  # bidi overrides (U+202E, U+2066-2069) could spoof the title
+            trovati.append((numero, "titolo con caratteri di controllo o di direzione: toglili"))
+        else:
+            obiettivi[slug] = titolo
+            righe[slug] = numero
+    return obiettivi, trovati
+
+
+def problemi(voci, obiettivi=None):
     """(riga, message saying what to fix) for duplicate ids, `dopo` pointing nowhere, cycles, and marker-like leftovers.
+
+    With `obiettivi` (the slugs defined in docs/obiettivi.md, possibly empty) it also flags `obiettivo:` markers
+    that name an undefined slug; `None` skips that check.
 
     A malformed trailing token stops the marker scan, so the markers before it stay plain text: the task silently
     loses its `dopo:` or `chi:te` and reads as ready. That is fail-open, so it is reported.
@@ -179,4 +216,7 @@ def problemi(voci):
         if resto := _QUASI_MARCATORE.search(v["testo"]):
             trovati.append((v["riga"], f"`{resto.group()}` non è un marcatore valido: scrivi i marcatori in fondo alla riga, "
                                        "come `chiave:valore` separati da spazi e senza niente dopo (es. `chi:te`)"))
+        slug = v["marcatori"].get("obiettivo")
+        if obiettivi is not None and slug is not None and slug not in obiettivi:
+            trovati.append((v["riga"], f"obiettivo:{slug} non è definito in docs/obiettivi.md: aggiungi `- {slug}: <titolo>`"))
     return trovati

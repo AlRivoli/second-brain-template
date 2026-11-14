@@ -588,6 +588,19 @@ path.arco.st-in_attesa, circle.arco.st-in_attesa { stroke: var(--todo); stroke-w
 .dipendenza { fill: none; stroke: var(--muted); stroke-width: 1.5; pointer-events: none; }
 #mappa-freccia path { fill: var(--muted); }
 .sat[role="button"]:hover .sat-punto, .sat:focus-visible .sat-punto { stroke: var(--text); stroke-width: 2; }
+/* goals: rounded boxes in a band above the nodes, light dashed lines to the nodes they touch; undefined goals keep a dashed outline */
+g.obiettivo { cursor: pointer; outline: none; transition: opacity .2s; }
+.obiettivo-box { fill: var(--surface); stroke: var(--border); stroke-width: 1; }
+g.obiettivo.non-definito .obiettivo-box { stroke: var(--muted); stroke-dasharray: 4 3; }
+g.obiettivo:hover .obiettivo-box, g.obiettivo:focus-visible .obiettivo-box, g.obiettivo.scelto .obiettivo-box { stroke: var(--text); stroke-width: 2; }
+.obiettivo-titolo { font-size: 13px; font-weight: 500; fill: var(--text); }
+.obiettivo-sub { font-size: 11px; fill: var(--faint); }
+.obiettivo .arco, .obiettivo-traccia { fill: none; stroke-width: 6; }   /* below path.arco.st-in_attesa in specificity: waiting stays thin and dashed */
+.obiettivo-traccia { stroke: var(--active); }
+.obiettivo-linea { fill: none; stroke: var(--control); stroke-width: 1; stroke-dasharray: 3 4; pointer-events: none; transition: opacity .2s; }
+.obiettivo-linea.scelta { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: none; }
+#mappa-svg.con-obiettivo .nodo:not(.coinvolto), #mappa-svg.con-obiettivo .obiettivo:not(.scelto), #mappa-svg.con-obiettivo .obiettivo-linea:not(.scelta) { opacity: .28; }
+.mappa-vuota { font-size: 14px; fill: var(--muted); text-anchor: middle; }
 .zona, .zona * { fill: transparent; stroke: transparent; pointer-events: all; }
 .filo { stroke: var(--control); stroke-width: 1; }
 #mappa-dettaglio h2 { font-size: 14px; font-weight: 600; }

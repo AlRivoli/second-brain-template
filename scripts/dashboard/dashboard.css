@@ -617,6 +617,54 @@ g.obiettivo:hover .obiettivo-box, g.obiettivo:focus-visible .obiettivo-box, g.ob
 .obiettivo-linea.scelta { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: none; }
 #mappa-svg.con-obiettivo .nodo:not(.coinvolto), #mappa-svg.con-obiettivo .obiettivo:not(.scelto), #mappa-svg.con-obiettivo .obiettivo-linea:not(.scelta) { opacity: .28; }
 .mappa-vuota { font-size: 14px; fill: var(--muted); text-anchor: middle; }
+/* Goal graph: over the map, under the header strip (its top is set from mappa.js), scrolling down only. The map underneath is
+   hidden with visibility, so it keeps its size, view and zoom. Waiting is dashed, a ghost is dashed and hollow, error is red
+   plus a word: never colour alone. */
+.mappa-grafo { position: absolute; top: 64px; left: 0; right: 0; bottom: 0; overflow-x: hidden; overflow-y: auto; scrollbar-gutter: stable; background: var(--raised); border-radius: 0 0 var(--radius-card) var(--radius-card); z-index: 1; transform-origin: 50% 0; }
+.grafo-azioni { display: none; gap: 8px; align-items: center; }
+@media (min-width: 761px) {
+  .mappa-box.con-grafo #mappa-svg, .mappa-box.con-grafo .legenda, .mappa-box.con-grafo .mappa-zoom { visibility: hidden; }
+  .mappa-box.con-grafo .grafo-azioni { display: flex; }
+  .mappa-box.con-grafo .mappa-testa-azioni > :not(.grafo-azioni) { display: none; }
+}
+.grafo-azioni button[aria-pressed="true"] { background: var(--active); border-color: var(--text); }
+.grafo-svg { display: block; }
+.grafo-nodo, .grafo-radice { cursor: pointer; outline: none; transition: opacity .2s; }
+.grafo-box { fill: var(--surface); stroke: var(--border); stroke-width: 1; }
+.grafo-radice .grafo-box { stroke: var(--control); stroke-width: 1.5; }
+.grafo-radice.a-rischio .grafo-box { stroke: var(--warning-edge); }
+.grafo-radice.scaduto .grafo-box { stroke: var(--late); }
+.grafo-nodo:hover .grafo-box, .grafo-radice:hover .grafo-box { stroke: var(--muted); }
+.grafo-anello { fill: none; stroke: var(--text); stroke-width: 2; opacity: 0; }
+.grafo-nodo:focus-visible .grafo-anello, .grafo-radice:focus-visible .grafo-anello { opacity: 1; }
+.grafo-titolo { font-size: 13px; font-weight: 500; fill: var(--text); }
+.grafo-sub { font-size: 11px; fill: var(--faint); }
+.grafo-punto { fill: var(--todo); }
+.grafo-nodo.st-in_corso .grafo-punto { fill: var(--doing); }
+.grafo-nodo.st-fatto .grafo-punto { fill: var(--done); }
+.grafo-nodo.st-in_attesa .grafo-punto { fill: var(--surface); stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 2 2; }
+.grafo-nodo.st-in_attesa .grafo-box { stroke: var(--muted); stroke-dasharray: 4 3; }
+.grafo-nodo.st-in_attesa .grafo-titolo { fill: var(--muted); }
+.grafo-nodo.st-fatto { opacity: .55; }
+.grafo-nodo.fantasma .grafo-box { fill: var(--raised); stroke: var(--muted); stroke-dasharray: 1 4; stroke-linecap: round; stroke-width: 1.5; }
+.grafo-nodo.fantasma .grafo-titolo { fill: var(--muted); font-style: italic; }
+.grafo-nodo.errore .grafo-box { stroke: var(--late); stroke-width: 1.5; }
+.grafo-nodo.errore .grafo-stato, .grafo-nodo.ritardo .grafo-titolo, .grafo-ritardo { fill: var(--late); }
+.grafo-ritardo, .grafo-avviso, .grafo-nodo.errore .grafo-stato { font-weight: 600; }
+.grafo-avviso { fill: var(--pill-warning-ink); }
+.grafo-nodo.scelto .grafo-box { fill: var(--active); stroke: var(--text); stroke-width: 2; stroke-dasharray: none; }
+.grafo-nodo.vicino .grafo-box { stroke: var(--text); stroke-width: 1.5; }
+.mappa-grafo.con-scelta .grafo-nodo:not(.scelto):not(.vicino), .mappa-grafo.con-scelta .grafo-arco:not(.vicino) { opacity: .4; }
+.grafo-arco { fill: none; stroke: var(--muted); stroke-width: 1.5; pointer-events: none; transition: opacity .2s; }
+.grafo-arco.radice { stroke: var(--control); stroke-width: 1; }
+.grafo-arco.fantasma { stroke-dasharray: 4 3; }
+.grafo-arco.fatto { opacity: .5; }
+.grafo-arco.vicino { stroke: var(--text); stroke-width: 2; opacity: 1; }
+#grafo-freccia path { fill: var(--muted); }
+#grafo-freccia-forte path { fill: var(--text); }
+.grafo-parentesi { fill: none; stroke: var(--control); stroke-width: 1.5; }
+.grafo-parallelo { font-size: 10px; fill: var(--faint); text-anchor: middle; }
+.grafo-nota { font-size: 11px; font-weight: 600; fill: var(--late); }
 .zona, .zona * { fill: transparent; stroke: transparent; pointer-events: all; }
 .filo { stroke: var(--control); stroke-width: 1; }
 #mappa-dettaglio h2 { font-size: 14px; font-weight: 600; }
@@ -682,7 +730,7 @@ button.chip-obiettivo:hover { color: var(--text); }
 button.link { border: 0; background: none; height: auto; padding: 0; text-align: left; font-weight: 400; font-size: 14px; line-height: 1.4; }
 button.link:hover { text-decoration: underline; background: none; }
 @media (max-width: 760px) {
-  #mappa-svg, .legenda, .mappa-zoom { display: none; }
+  #mappa-svg, .legenda, .mappa-zoom, .mappa-grafo { display: none; }   /* no graph on phones: the list groups by row */
   .mappa-box { height: auto; padding: 16px; overflow: visible; }
   .mappa-testa { position: static; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
   .mappa-testa::before { content: none; }
@@ -696,7 +744,7 @@ button.link:hover { text-decoration: underline; background: none; }
   .saluto { font-size: 30px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .nodo, .nodo.prossimo .alone, .sat-dentro, .obiettivo.rivelato { transition: none !important; animation: none !important; }
+  .nodo, .nodo.prossimo .alone, .sat-dentro, .obiettivo.rivelato, .grafo-nodo, .grafo-radice, .grafo-arco { transition: none !important; animation: none !important; }
 }
 
 /* Componenti condivisi delle pagine secondarie (componenti.js) */

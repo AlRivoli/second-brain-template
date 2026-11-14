@@ -343,6 +343,20 @@ class MappaTest(unittest.TestCase):
         self.assertEqual(t["due"]["aspetta"], [{"id": "u1", "vista": "uno", "nodo": "alfa", "chi": None}])
         self.assertEqual((m["conteggi"]["pronti"], m["conteggi"]["in_attesa"]), (2, 1))
 
+    def test_dopo_elenca_anche_i_bloccanti_fatti_e_solo_id(self):
+        # the goal graph needs every edge, done blockers included (`aspetta` drops them); broken and twin ids are no edge
+        m = mappa_di("## A\n- [x] #alfa uno id:u1\n- [ ] #alfa due id:u2\n- [ ] #alfa tre dopo:u1,u2,u2,zz\n"
+                     "- [ ] #alfa x id:dd\n- [ ] #alfa y id:dd\n- [ ] #beta quattro dopo:dd\n")
+        t = {x["vista"]: x for n in m["nodi"] for x in n["task"]}
+        self.assertEqual(t["tre"]["dopo"], ["u1", "u2"])
+        self.assertEqual([a["id"] for a in t["tre"]["aspetta"]], ["u2"])
+        self.assertEqual((t["quattro"]["dopo"], t["uno"]["dopo"]), ([], []))
+        self.assertTrue(all(isinstance(i, str) and "/" not in i and "\\" not in i for x in t.values() for i in x["dopo"]))
+        v = vault_finto("")
+        con_bozze(v, linkedin={"2026-11-02-b.md": "Bozza linkedin: B"})
+        social = next(n for n in server.mappa(ADESSO, piano_file=v / "docs" / "piano.md", vault=v)["nodi"] if n["nome"] == "Social")
+        self.assertEqual([x["dopo"] for x in social["task"]], [[]])
+
     def test_mappa_task_porta_id_chi_errore_e_mancanti(self):
         m = mappa_di("## A\n- [ ] #alfa uno id:u1 chi:te\n- [ ] #alfa due dopo:zz\n")
         t = {x["vista"]: x for n in m["nodi"] for x in n["task"]}

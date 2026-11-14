@@ -281,6 +281,137 @@
     return `M${p(a0)}A${r} ${r} 0 ${a1 - a0 > Math.PI ? 1 : 0} 1 ${p(a1)}`;
   }
 
+  // ---- grafo dell'obiettivo: impaginazione pura (niente DOM né stato del modulo: la prova la esegue in node) ----
+  // A task is known by its date and text everywhere in this file: an id is optional
+  const chiaveTask = t => (t.data || '') + '|' + t.testo;
+  // The ids a task waits on: every resolved one from the server, done blockers too; else the open ones (fixture, older server)
+  const dopoDi = t => t.dopo || (t.aspetta || []).map(a => a.id).filter(Boolean);
+  // The nodes of a goal's graph: its tasks, plus as ghosts a blocker outside the goal and a task outside it that waits on one of
+  // ours (a ghost is never expanded further). `tutti`: every task of the map with its `nodo`. Done tasks only `conFatti`: their
+  // links are met. An id held by two tasks is no edge, as on the server. `ordine` is plan order, a ghost next to its first link.
+  // O(N + E) time and space.
+  function nodiGrafo(o, tutti, conFatti) {
+    const perId = new Map(), doppi = new Set();
+    for (const t of tutti) if (t.id) { if (perId.has(t.id)) doppi.add(t.id); else perId.set(t.id, t); }
+    const di = id => doppi.has(id) ? undefined : perId.get(id);
+    const mostra = t => conFatti || t.stato !== 'fatto';
+    const fantasma = t => t.obiettivo ? 'altro obiettivo' : 'senza obiettivo';
+    const nodi = new Map();
+    const nodo = (t, ordine, f) => {
+      const k = chiaveTask(t);
+      if (!nodi.has(k)) nodi.set(k, { chiave: k, t, dopo: [], ordine, fantasma: f });
+      return nodi.get(k);
+    };
+    const lega = (n, k) => { if (!n.dopo.includes(k)) n.dopo.push(k); };
+    o.task.filter(mostra).forEach((t, i) => nodo(t, i, null));
+    for (const n of [...nodi.values()]) {
+      for (const id of dopoDi(n.t)) {
+        const b = di(id);
+        if (!b || !mostra(b)) continue;
+        const k = b.obiettivo === o.slug ? chiaveTask(b) : nodo(b, n.ordine - 0.5, fantasma(b)).chiave;
+        if (nodi.has(k)) lega(n, k);
+      }
+    }
+    for (const t of tutti) {
+      if (t.obiettivo === o.slug || !mostra(t)) continue;
+      const su = dopoDi(t).map(di).filter(b => b && b.obiettivo === o.slug && nodi.has(chiaveTask(b))).map(chiaveTask);
+      if (!su.length) continue;
+      const n = nodo(t, Math.max(...su.map(k => nodi.get(k).ordine)) + 0.5, fantasma(t));
+      su.forEach(k => lega(n, k));
+    }
+    return [...nodi.values()];
+  }
+  // Rows by dependency depth: row 0 without a shown blocker, else one past the deepest blocker (Kahn: O(V + E) time and space).
+  // Tasks in one row can run in parallel. A ghost blocker then moves down to just above its first waiter. What a cycle leaves
+  // unordered (the cycle and everything after it) gets a last row of its own.
+  function stratiGrafo(nodi) {
+    const per = new Map(nodi.map(n => [n.chiave, { figli: [], attese: n.dopo.length, strato: 0 }]));
+    for (const n of nodi) for (const k of n.dopo) per.get(k).figli.push(n.chiave);
+    const coda = nodi.filter(n => !n.dopo.length).map(n => n.chiave);
+    for (let i = 0; i < coda.length; i++) {
+      const a = per.get(coda[i]);
+      for (const f of a.figli) {
+        const b = per.get(f);
+        b.strato = Math.max(b.strato, a.strato + 1);
+        if (!--b.attese) coda.push(f);
+      }
+    }
+    const avanzo = new Set(nodi.filter(n => per.get(n.chiave).attese > 0).map(n => n.chiave));
+    for (const n of nodi) {
+      const a = per.get(n.chiave), giu = a.figli.filter(f => !avanzo.has(f)).map(f => per.get(f).strato);
+      if (n.fantasma && !n.dopo.length && giu.length) a.strato = Math.min(...giu) - 1;
+    }
+    let ultimo = -1;
+    for (const n of nodi) if (!avanzo.has(n.chiave)) ultimo = Math.max(ultimo, per.get(n.chiave).strato);
+    const strato = new Map(nodi.map(n => [n.chiave, avanzo.has(n.chiave) ? ultimo + 1 : per.get(n.chiave).strato]));
+    return { strato, avanzo, quanti: avanzo.size ? ultimo + 2 : ultimo + 1 };
+  }
+  // Geometry in px: a gutter on the left for the bracket of a wrapped row, the root (the goal) on top, then the rows centred,
+  // as many boxes per line as `W` holds; a row with more wraps onto more lines and stays one row.
+  const GRAFO = { lato: 32, margine: 16, min: 180, max: 240, gap: 20, passo: 44, cima: 16, radice: 380, altoRadice: 74, scosta: 6 };
+  // `alto`: the height of a task box. Order in a row: one barycenter pass (mean x of the blockers already placed) against crossings,
+  // ties and tasks with no placed blocker in plan order. Arrows run orthogonally from the blocker's bottom to the waiter's top:
+  // down, across, down; one that skips lines detours through a lane free of every box on them (a side margin always is).
+  // O(V log V + E * B log B) time for B boxes on the skipped lines (sorted per arrow), O(V + E) space.
+  function impaginaGrafo(nodi, W, alto) {
+    const { strato, avanzo, quanti } = stratiGrafo(nodi);
+    const usabile = Math.max(GRAFO.min, W - GRAFO.lato - GRAFO.margine);
+    const perRiga = Math.max(1, Math.floor((usabile + GRAFO.gap) / (GRAFO.min + GRAFO.gap)));
+    const righe = Array.from({ length: quanti }, () => []);
+    for (const n of nodi) righe[strato.get(n.chiave)].push(n);
+    const k = Math.min(perRiga, Math.max(1, ...righe.map(r => r.length)));
+    const largo = Math.min(GRAFO.max, (usabile - (k - 1) * GRAFO.gap) / k);
+    const rw = Math.min(GRAFO.radice, usabile);
+    const radice = { x: GRAFO.lato + (usabile - rw) / 2, y: GRAFO.cima, w: rw, h: GRAFO.altoRadice };
+    const posti = new Map(), linee = [], strati = [];
+    let y = radice.y + radice.h + GRAFO.passo;
+    righe.forEach((riga, s) => {
+      const media = n => {
+        const xs = n.dopo.map(c => posti.get(c)).filter(Boolean).map(p => p.x + p.w / 2);
+        return xs.length ? xs.reduce((a, b) => a + b) / xs.length : Infinity;
+      };
+      const ordinati = riga.map(n => [n, media(n)]).sort((a, b) => (a[1] - b[1]) || a[0].ordine - b[0].ordine).map(([n]) => n);
+      const y0 = y;
+      for (let i = 0; i < ordinati.length; i += perRiga) {
+        const pezzo = ordinati.slice(i, i + perRiga), x0 = GRAFO.lato + (usabile - pezzo.length * largo - (pezzo.length - 1) * GRAFO.gap) / 2;
+        const linea = { y, scatole: pezzo.map((n, j) => ({ chiave: n.chiave, x: x0 + j * (largo + GRAFO.gap), y, w: largo, h: alto, strato: s })) };
+        linea.scatole.forEach(p => posti.set(p.chiave, p));
+        linee.push(linea);
+        y += alto + GRAFO.passo;
+      }
+      strati.push({ strato: s, y0, y1: y - GRAFO.passo, linee: Math.ceil(ordinati.length / perRiga), avanzo: ordinati.some(n => avanzo.has(n.chiave)), chiavi: ordinati.map(n => n.chiave) });
+    });
+    // a free x across the lines strictly between two y (the gaps and margins no box, plus `scosta`, covers): the blocker's own x
+    // when free, so the arrow drops straight; else the one nearest to the waiter's x
+    const corsia = (y0, y1, xb, x) => {
+      const pieni = linee.filter(l => l.y > y0 && l.y < y1).flatMap(l => l.scatole.map(b => [b.x - GRAFO.scosta, b.x + b.w + GRAFO.scosta])).sort((a, b) => a[0] - b[0]);
+      const liberi = [];
+      let da = GRAFO.lato + 2;   // the gutter holds the «in parallelo» bracket
+      for (const [a, b] of pieni) { if (a > da) liberi.push([da, a]); da = Math.max(da, b); }
+      if (W - 4 > da) liberi.push([da, W - 4]);
+      if (liberi.some(([a, b]) => a <= xb && xb <= b)) return xb;
+      let meglio = null;
+      for (const [a, b] of liberi) { const c = Math.max(a, Math.min(b, x)); if (meglio === null || Math.abs(c - x) < Math.abs(meglio - x)) meglio = c; }
+      return meglio === null ? x : meglio;
+    };
+    const f = v => +v.toFixed(1);
+    const via = (p, q) => {
+      const xb = f(p.x + p.w / 2), yb = f(p.y + p.h), xa = f(q.x + q.w / 2), ya = f(q.y);
+      if (!linee.some(l => l.y > p.y && l.y < q.y)) return `M${xb} ${yb}V${f((yb + ya) / 2)}H${xa}V${ya}`;
+      // ponytail: arrows that share a lane or a channel overlap there; offset lanes if a real plan gets hard to read
+      return `M${xb} ${yb}V${f(yb + GRAFO.passo / 2)}H${f(corsia(p.y, q.y, xb, xa))}V${f(ya - GRAFO.passo / 2)}H${xa}V${ya}`;
+    };
+    const archi = [];
+    for (const n of nodi) {
+      const q = posti.get(n.chiave);
+      for (const c of n.dopo) { const p = posti.get(c); if (q.y > p.y) archi.push({ da: c, a: n.chiave, d: via(p, q) }); }   // none inside the cycle's own row
+    }
+    // the tree: from the goal to its own tasks on the first line of the first row (the bracket ties a wrapped row's other lines
+    // to it: links threading down to them only crowded the lanes)
+    const radici = (righe[0] || []).filter(n => !n.fantasma && !avanzo.has(n.chiave) && linee.length && posti.get(n.chiave).y === linee[0].y).map(n => ({ da: null, a: n.chiave, d: via(radice, posti.get(n.chiave)), radice: true }));
+    return { radice, posti, strati, archi: [...radici, ...archi], largo, perRiga, alto: (linee.length ? y - GRAFO.passo : radice.y + radice.h) + 24 };
+  }
+
   // ---- zoom e spostamento: una trasformazione sul gruppo del mondo; il testo non scala (vedi --k nel CSS) ----
   let trascinato = false;   // vero dopo un trascinamento: il clic che lo segue non deve deselezionare
   function applicaVista() {
@@ -570,8 +701,8 @@
       // the risk is a word in bold next to the date, and the outline changes too: never colour alone
       if (scadenza) G.append(s('text', { class: 'obiettivo-sub', x: x + 12, y: y + 66 }, [scadenza, ...(stato && !lungo ? [s('tspan', { class: 'obiettivo-rischio' }, [' · ' + stato])] : [])]));
       if (lungo) G.append(s('text', { class: 'obiettivo-sub', x: x + 12, y: y + 66 + RIGA }, [s('tspan', { class: 'obiettivo-rischio' }, [stato])]));
-      G.addEventListener('click', () => scegliObiettivo(o.slug));
-      G.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); scegliObiettivo(o.slug); } });
+      G.addEventListener('click', () => apriGrafo(o.slug));   // the goal opens as a graph; the panel chip only selects it
+      G.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); apriGrafo(o.slug); } });
       obiettiviSvg.set(o.slug, { G, linee: sue });
       linee.push(...sue); scatole.push(G);
     });
@@ -718,17 +849,197 @@
   }
   function scegli(nome) { if (fissato !== nome) filtroRepo = null; fissato = nome; selezione = null; apri(nome); pannello(); inquadra(nome); }
   function scegliObiettivo(slug) {
-    fissato = PREFISSO_OBIETTIVO + slug; selezione = null; apri(null); pannello(); torna();   // the band may be out of a framed view
+    fissato = PREFISSO_OBIETTIVO + slug; selezione = null; apri(null); pannello();
+    if (!grafo) torna();   // the band may be out of a framed view; under the graph the map keeps its view for when it closes
     if (!obiettiviSvg.has(slug)) disegna();   // a folded goal: the band always draws the fixed one
   }
   // fissa il nodo, seleziona il task e porta il pannello su di lui: la lista dei task può essere più lunga del pannello
   function scegliTask(nome, t) {
     if (fissato !== nome || (filtroRepo && !tocca(t, filtroRepo.repo))) filtroRepo = null;   // a task the filter hides could not be scrolled to
-    fissato = nome; selezione = t; apri(nome); pannello();
+    fissato = nome; selezione = t; apri(nome); pannello(); scorriAlScelto();
+  }
+  function scorriAlScelto() {
     const d = $('mappa-dettaglio'), el = d.querySelector('.task.scelto');
     if (el) d.scrollTop += el.getBoundingClientRect().top - d.getBoundingClientRect().top - (d.clientHeight - el.offsetHeight) / 2;
   }
   function deseleziona() { fissato = null; selezione = null; apri(null); pannello(); torna(); }
+
+  // ---- grafo dell'obiettivo: la vista ----
+  // A goal box of the band opens its graph over the map. The map underneath is only hidden (visibility, so it keeps its size and
+  // its view and zoom), and comes back as it was. The graph shows the fixed goal: whatever unfixes it (another node, «Torna alla
+  // prossima azione», a refresh where the goal is gone) closes it too. Below 760px it is never drawn: the list groups by row.
+  let grafo = false;           // the fixed goal is shown as a graph
+  let grafoFatti = false;      // «Mostra fatti»: off again for every other goal
+  let grafoSlug = null, grafoChiave = '', grafoImpronta = null, grafoMoto = false;
+  let grafoScatole = new Map(), grafoArchi = [];   // chiave -> box; arrows { da, a, radice, P }
+  const tuttiITask = () => dati.nodi.flatMap(n => n.task.filter(t => !t.bozza).map(t => ({ ...t, nodo: n.nome })));
+  function apriGrafo(slug) {
+    if (fissato !== PREFISSO_OBIETTIVO + slug) grafoFatti = false;
+    grafo = true; grafoMoto = true;   // motion only for this open, never for a refresh or a resize
+    scegliObiettivo(slug);            // pannello() draws the graph
+    const radice = document.querySelector('#mappa-grafo .grafo-radice');
+    if (radice) radice.focus({ preventScroll: true });   // the pressed box is now under the graph
+  }
+  function chiudiGrafo() {
+    const o = grafo && obiettivoPer(fissato);
+    grafo = false; aggiornaGrafo();
+    const box = o && obiettiviSvg.get(o.slug);
+    if (box) box.G.focus();
+  }
+  // A box of the graph picks its task in the goal's panel (state buttons, «Avvia»): the goal stays fixed, so the graph stays
+  function scegliNelGrafo(t) { selezione = t; pannello(); scorriAlScelto(); }
+  // A ghost leads where its task lives: the graph of its goal, or the task in its node (which closes the graph)
+  function vaiAlFantasma(t) {
+    if (t.obiettivo && obiettivoPer(PREFISSO_OBIETTIVO + t.obiettivo)) return apriGrafo(t.obiettivo);
+    const n = nodoPer(t.nodo), suo = n && n.task.find(x => chiaveTask(x) === chiaveTask(t));
+    if (!suo) return;
+    scegliTask(n.nome, suo);
+    fuocoAlPannello();
+  }
+  // Called by pannello() and on resize: shows or hides the view, redraws only when the goal, the toggle, the width or the data
+  // changed (so a pick keeps the focus on its box), then marks the selection.
+  function aggiornaGrafo() {
+    const box = $('mappa-grafo');
+    if (!box || !dati) return;
+    const o = grafo ? obiettivoPer(fissato) : undefined;
+    if (!o) grafo = false;
+    box.hidden = !o;
+    box.parentNode.classList.toggle('con-grafo', !!o);
+    if (!o) {
+      const dentro = box.contains(document.activeElement);   // e.g. a refresh where the goal is gone: never leave the focus on the page
+      grafoSlug = null; grafoChiave = ''; grafoScatole = new Map(); grafoArchi = []; box.replaceChildren();
+      if (dentro) fuocoAlPannello();
+      return;
+    }
+    const chiave = o.slug + '|' + grafoFatti + '|' + box.clientWidth;
+    if (chiave !== grafoChiave || grafoImpronta !== impronta) {
+      const nuovo = grafoSlug !== o.slug;
+      grafoChiave = chiave; grafoImpronta = impronta; grafoSlug = o.slug;
+      disegnaGrafo(o, nuovo);
+    }
+    evidenziaGrafo();
+  }
+  function disegnaGrafo(o, nuovo) {
+    const box = $('mappa-grafo'), testa = document.querySelector('.mappa-testa');
+    const prima = document.activeElement && document.activeElement.closest && document.activeElement.closest('#mappa-grafo [data-chiave], #mappa-grafo .grafo-radice');
+    const fuoco = prima && prima.getAttribute('data-chiave');
+    const conMoto = grafoMoto; grafoMoto = false;
+    grafoScatole = new Map(); grafoArchi = [];
+    if (testa) box.style.top = (testa.offsetTop + testa.offsetHeight + 10) + 'px';   // just under the header's solid strip
+    const W = box.clientWidth;
+    if (W < 2) { box.replaceChildren(); return; }   // narrow screen: the list says it
+    if (nuovo) box.scrollTop = 0;
+    const fatti = o.task.filter(t => t.stato === 'fatto').length, interruttore = document.querySelector('.grafo-fatti');
+    interruttore.hidden = !fatti;
+    interruttore.textContent = 'Mostra fatti (' + fatti + ')';
+    interruttore.setAttribute('aria-pressed', String(grafoFatti));
+    const nodi = nodiGrafo(o, tuttiITask(), grafoFatti), per = new Map(nodi.map(n => [n.chiave, n]));
+    // The real plans repeat their title before each task («Piano · Task 3: …»): a leading «X · » two boxes share is dropped on
+    // the box, so the cut title still says something. The whole title stays in the tooltip and in the accessible name.
+    const testaDi = v => { const i = v.indexOf(' · '); return i > 0 ? v.slice(0, i + 3) : ''; };
+    const quante = new Map();
+    for (const n of nodi) { const p = testaDi(n.t.vista); if (p) quante.set(p, (quante.get(p) || 0) + 1); }
+    const breve = v => { const p = testaDi(v); return p && quante.get(p) > 1 && v.length > p.length ? v.slice(p.length) : v; };
+    // the warnings are words on a third line; one box with them gives every box that line, so the rows stay even
+    const avvisi = t => [t.ritardo ? ['in ritardo', 'grafo-ritardo'] : null, (t.stessoRepo || []).length ? ['stesso repo di un task in corso', 'grafo-avviso'] : null,
+      t.chi === 'te' ? ['tocca a te', ''] : null].filter(Boolean);
+    const alto = nodi.some(n => !n.fantasma && avvisi(n.t).length) ? 90 : 72;
+    // the title on two lines (a box is narrow and the words are what tell tasks apart), the second cut with an ellipsis;
+    // the line below cut by characters, so the project shows as far as it fits
+    const dueRighe = (v, max) => {
+      if (v.length <= max) return [v];
+      const i = v.slice(0, max + 1).lastIndexOf(' '), a = i > max / 2 ? v.slice(0, i) : v.slice(0, max);
+      return [a, taglia(v.slice(a.length).trim(), max)];
+    };
+    const corto = (v, max) => v.length > max ? v.slice(0, max - 1).trimEnd() + '…' : v;
+    const g = impaginaGrafo(nodi, W, alto), r = g.radice;
+    const dipendenti = new Map();
+    for (const n of nodi) for (const k of n.dopo) dipendenti.set(k, [...(dipendenti.get(k) || []), n.chiave]);
+    const freccia = (id) => s('marker', { id, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto' }, [s('path', { d: 'M0 0L10 5L0 10z' })]);
+    const svg = s('svg', { class: 'grafo-svg', width: W, height: g.alto }, [s('defs', {}, [freccia('grafo-freccia'), freccia('grafo-freccia-forte')])]);
+    // arrows first: a box is opaque, so nothing reads as running through it
+    for (const a of g.archi) {
+      const da = a.da && per.get(a.da), verso = per.get(a.a);
+      const P = s('path', { class: 'grafo-arco' + (a.radice ? ' radice' : '') + ((da && da.fantasma) || verso.fantasma ? ' fantasma' : '') + (da && da.t.stato === 'fatto' ? ' fatto' : ''), d: a.d,
+        ...(a.radice ? {} : { 'marker-end': 'url(#grafo-freccia)' }) });
+      svg.appendChild(P);
+      grafoArchi.push({ ...a, P });
+    }
+    // a row wrapped onto more lines: a bracket in the left gutter says it is still one row
+    for (const st of g.strati) {
+      if (st.avanzo) svg.appendChild(s('text', { class: 'grafo-nota', x: GRAFO.lato, y: st.y0 - 12 }, ['fuori ordine: dipendenze in ciclo']));
+      if (st.linee < 2) continue;
+      const m = (st.y0 + st.y1) / 2;
+      svg.append(s('path', { class: 'grafo-parentesi', d: `M${GRAFO.lato - 4} ${st.y0}H${GRAFO.lato - 10}V${st.y1}H${GRAFO.lato - 4}` }, [s('title', {}, ['Passo ' + (st.strato + 1) + ': ' + st.chiavi.length + ' task in parallelo'])]),
+        s('text', { class: 'grafo-parallelo', x: 12, y: m, transform: `rotate(-90 12 ${m})` }, ['in parallelo']));
+    }
+    // the root: the goal itself, the same words as its band box; pressing it leaves the graph
+    const scadenza = scade(o), stato = rischio(o);
+    const R = s('g', { class: 'grafo-radice' + (stato === 'scaduto' ? ' scaduto' : stato ? ' a-rischio' : ''), tabindex: 0, role: 'button',
+      'aria-label': o.titolo + ', obiettivo: ' + contoObiettivo(o) + (scadenza ? ', ' + scadenza : '') + (stato ? ', ' + stato : '') + '. Premi per tornare alla mappa' });
+    R.append(s('title', {}, [o.titolo + '\n' + contoObiettivo(o)]), s('rect', { class: 'grafo-anello', x: r.x - 4, y: r.y - 4, width: r.w + 8, height: r.h + 8, rx: 13 }),
+      s('rect', { class: 'grafo-box', x: r.x, y: r.y, width: r.w, height: r.h, rx: 10 }),
+      s('text', { class: 'grafo-titolo', x: r.x + 14, y: r.y + 22 }, [taglia(o.titolo, Math.floor((r.w - 28) / 6.6))]),
+      s('text', { class: 'grafo-sub', x: r.x + 14, y: r.y + 42 }, [taglia(contoObiettivo(o), Math.floor((r.w - 28) / 5.6))]));
+    if (scadenza) R.append(s('text', { class: 'grafo-sub', x: r.x + 14, y: r.y + 60 }, [scadenza, ...(stato ? [s('tspan', { class: 'obiettivo-rischio' }, [' · ' + stato])] : [])]));
+    R.addEventListener('click', e => { e.stopPropagation(); chiudiGrafo(); });   // as a satellite: the page's click never undoes it
+    R.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); chiudiGrafo(); } });
+    svg.appendChild(R);
+    if (!nodi.length) svg.appendChild(s('text', { class: 'mappa-vuota', x: W / 2, y: r.y + r.h + 48 }, [o.task.length ? 'Tutti i task sono fatti: «Mostra fatti» li mostra.' : NESSUN_PASSO]));
+    // the boxes in reading order, row by row and left to right: that is also the Tab order
+    for (const st of g.strati) for (const k of st.chiavi) {
+      const n = per.get(k), t = n.t, p = g.posti.get(k), suo = nodoPer(t.nodo);
+      const vis = statoVisivo(t), parola = t.derivato === 'errore' ? 'errore' : NOME_VISIVO[vis];
+      const stima = !n.fantasma && t.stima ? String(Math.round(t.stima * 10) / 10).replace('.', ',') + 'h' : '';
+      const sotto = [n.fantasma, parola, stima, t.nodo].filter(Boolean).join(' · '), segni = n.fantasma ? [] : avvisi(t);
+      const nomi = ks => ks.map(c => breve(per.get(c).t.vista)).join('; ');
+      const etichetta = [t.vista, n.fantasma, parola, t.nodo, st.avanzo ? 'fuori ordine: dipendenze in ciclo' : 'passo ' + (st.strato + 1), ...segni.map(([w]) => w),
+        n.dopo.length ? 'aspetta: ' + nomi(n.dopo) : '', (dipendenti.get(k) || []).length ? 'sblocca: ' + nomi(dipendenti.get(k)) : '',
+        n.fantasma ? (t.obiettivo ? 'apre il suo obiettivo' : 'apre il suo nodo') : ''].filter(Boolean).join(', ');
+      const G = s('g', { class: 'grafo-nodo st-' + vis + (t.derivato === 'errore' || st.avanzo ? ' errore' : '') + (n.fantasma ? ' fantasma' : '') + (t.ritardo ? ' ritardo' : ''),
+        tabindex: 0, role: 'button', 'aria-label': etichetta, 'data-chiave': k });
+      G.append(s('title', {}, [[t.vista, ...(suo ? motivi(t, suo) : [])].join('\n')]),
+        s('rect', { class: 'grafo-anello', x: p.x - 4, y: p.y - 4, width: p.w + 8, height: p.h + 8, rx: 13 }),
+        s('rect', { class: 'grafo-box', x: p.x, y: p.y, width: p.w, height: p.h, rx: 10 }),
+        s('circle', { class: 'grafo-punto', cx: p.x + 16, cy: p.y + 17, r: 4 }),
+        s('text', { class: 'grafo-titolo', x: p.x + 28, y: p.y + 21 }, dueRighe(breve(t.vista), Math.floor((p.w - 40) / 6.6)).map((v, i) => s('tspan', { x: p.x + 28, dy: i ? 17 : 0 }, [v]))),
+        s('text', { class: 'grafo-sub', x: p.x + 12, y: p.y + 58 }, [s('tspan', { class: 'grafo-stato' }, [corto(sotto, Math.floor((p.w - 24) / 5.6))])]));
+      if (segni.length) G.append(s('text', { class: 'grafo-sub', x: p.x + 12, y: p.y + 76 }, segni.flatMap(([w, c], i) => [i ? ' · ' : '', s('tspan', { class: c }, [w])]).filter(Boolean)));
+      const premi = () => n.fantasma ? vaiAlFantasma(t) : scegliNelGrafo(t);
+      G.addEventListener('click', e => { e.stopPropagation(); premi(); });   // a ghost may have redrawn this box away before the page saw it
+      G.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); premi(); } });
+      grafoScatole.set(k, G);
+      svg.appendChild(G);
+    }
+    box.setAttribute('aria-label', 'Grafo dell\'obiettivo ' + o.titolo + ': un passo per riga, i task della stessa riga possono procedere in parallelo, le frecce vanno da ciò che blocca a ciò che aspetta. La stessa lista è sotto.');
+    box.replaceChildren(svg);
+    const ancora = fuoco && grafoScatole.get(fuoco);
+    if (ancora) ancora.focus({ preventScroll: true });   // a refresh redrew the box that had the focus
+    else if (prima) R.focus({ preventScroll: true });
+    if (!conMoto) return;
+    anima(box, [{ opacity: 0, transform: 'scale(.98)' }, { opacity: 1, transform: 'none' }], 200);
+    for (const a of grafoArchi) {
+      const L = a.P.getTotalLength(), riga = g.posti.get(a.a).strato;
+      anima(a.P, [{ strokeDasharray: L, strokeDashoffset: L }, { strokeDasharray: L, strokeDashoffset: 0 }], 250, 120 + Math.min(riga, 6) * 40);
+    }
+  }
+  // The selected box, and its blockers and dependents with their arrows, stand out; the rest dims a little. Classes only.
+  function evidenziaGrafo() {
+    const box = $('mappa-grafo'), k = selezione && chiaveTask(selezione), su = !!k && grafoScatole.has(k);
+    if (!box) return;
+    const legato = a => su && !a.radice && (a.da === k || a.a === k), vicini = new Set();
+    for (const a of grafoArchi) if (legato(a)) { vicini.add(a.da); vicini.add(a.a); }
+    box.classList.toggle('con-scelta', su);
+    for (const [c, G] of grafoScatole) {
+      G.classList.toggle('scelto', su && c === k);
+      G.classList.toggle('vicino', su && c !== k && vicini.has(c));
+      if (su && c === k) G.setAttribute('aria-current', 'true'); else G.removeAttribute('aria-current');
+    }
+    for (const a of grafoArchi) {
+      a.P.classList.toggle('vicino', legato(a));
+      if (!a.radice) a.P.setAttribute('marker-end', legato(a) ? 'url(#grafo-freccia-forte)' : 'url(#grafo-freccia)');
+    }
+  }
 
   // ---- lista equivalente (lettori di schermo; sotto i 760px prende il posto della mappa) ----
   // one task of the list, for nodes and goals alike; under a goal the row also names its node
@@ -742,13 +1053,29 @@
       conNodo ? null : segnoObiettivo(t),   // under a goal the row already sits in its goal
     ]);
   }
+  // A goal in the list: its open tasks by row, the same rows as the graph (a ghost is a row too, named as such), then «Fatti»
+  // folded as in the other groups (not under «Aperti»). Below 760px this is the goal graph.
+  function passiLista(o) {
+    const nodi = nodiGrafo(o, tuttiITask(), false), { strato, avanzo, quanti } = stratiGrafo(nodi);
+    const righe = Array.from({ length: quanti }, () => []);
+    for (const n of nodi.slice().sort((a, b) => a.ordine - b.ordine)) righe[strato.get(n.chiave)].push(n);
+    const riga = t => rigaLista(nodoPer(t.nodo), t, true);
+    return [
+      ...righe.flatMap((r, i) => [
+        h('h4', 'gruppo', [r.some(n => avanzo.has(n.chiave)) ? 'Fuori ordine — dipendenze in ciclo: ' + r.length + ' task'
+          : 'Passo ' + (i + 1) + ' — ' + (r.length > 1 ? 'in parallelo: ' + r.length + ' task' : '1 task')]),
+        h('ul', 'task-elenco', r.map(n => { const li = riga(n.t); if (n.fantasma) li.append(h('span', 'sub', [n.fantasma])); return li; })),
+      ]),
+      ...(filtro === 'aperti' ? [] : gruppi(o.task.filter(t => t.stato === 'fatto'), riga, 'h4')),
+    ];
+  }
   function lista() {
     const ul = $('mappa-lista');
     if (!ul || !dati) return;
     const daMostrare = ts => filtro === 'aperti' ? ts.filter(t => t.stato !== 'fatto') : ts;
     const obiettivi = obiettiviVisibili().map(o => h('li', '', [
       h('h3', '', [o.titolo, h('span', 'tipo-nodo', [o.definito ? 'obiettivo' : 'obiettivo non definito']), h('span', 'sub', [contoObiettivo(o) + (scade(o) ? ' · ' + scade(o) : '')]), etichettaRischio(o)]),
-      ...(o.task.length ? gruppi(daMostrare(o.task), t => rigaLista(nodoPer(t.nodo), t, true), 'h4') : [h('p', 'vuoto', [NESSUN_PASSO])]),
+      ...(o.task.length ? passiLista(o) : [h('p', 'vuoto', [NESSUN_PASSO])]),
     ]));
     const senza = filtro === 'obiettivi' && !obiettiviDi().length ? [h('li', 'vuoto', [NESSUN_OBIETTIVO])] : [];
     ul.replaceChildren(...obiettivi, ...senza, ...visibili().map(n => h('li', '', [
@@ -992,7 +1319,7 @@
     $('prossimi-giorni').replaceChildren(...(g.length ? [h('h2', '', ['Prossimi giorni']), h('ul', 'prossimi', g.map(v => h('li', '', [
       h('span', '', [v.vista || v.testo]), h('span', 'quando' + (v.inRitardo ? ' ritardo' : ''), [v.inRitardo ? 'dal ' + giornoBreve(v.data) : giornoBreve(v.data)]),
     ])))] : []));
-    filo(); evidenziaObiettivo();
+    filo(); evidenziaObiettivo(); aggiornaGrafo();
   }
 
   // ---- azioni ----
@@ -1236,13 +1563,18 @@
     [['Ingrandisci', 0], ['Riduci', 1], ['Adatta alla vista', 2]].forEach(([nome, i]) => zoom.children[i].setAttribute('aria-label', nome));
     svg.addEventListener('pointerleave', () => { if (!fuocoNeiSatelliti()) apri(fissato, false, true); });
     const legenda = h('div', 'legenda', GRUPPI.map(([st]) => h('span', '', [h('i', 'punto st-' + st), NOME_VISIVO[st]])));
+    // shown only with the goal graph open, in place of the filters: the done toggle keeps its focus across the redraw
+    const fatti = bottone('Mostra fatti', 'grafo-fatti', () => { grafoFatti = !grafoFatti; aggiornaGrafo(); });
+    const grafoAzioni = h('div', 'grafo-azioni', [fatti, bottone('Mappa', '', chiudiGrafo)]);
     $('mappa-area').replaceChildren(h('div', 'mappa-box', [
-      h('div', 'mappa-testa', [h('h2', '', ['Mappa del lavoro']), h('div', 'mappa-testa-azioni', [filtri, bottone('Nuovo progetto', '', nuovoProgetto)])]), svg, legenda, zoom,
+      h('div', 'mappa-testa', [h('h2', '', ['Mappa del lavoro']), h('div', 'mappa-testa-azioni', [filtri, bottone('Nuovo progetto', '', nuovoProgetto), grafoAzioni])]), svg, legenda, zoom,
+      h('div', 'mappa-grafo', [], { id: 'mappa-grafo', role: 'group', hidden: '' }),
       h('ul', 'mappa-lista', [], { id: 'mappa-lista', 'aria-label': 'Nodi e task, in elenco' }),
     ]), h('p', 'nota-mappa', ['Il numero sul nodo = task pronti da avviare. Social: bozze da pubblicare.']));
     new ResizeObserver(() => {
       const q = svg.clientWidth + 'x' + svg.clientHeight;
       if (dati && q !== dimensione) disegna();
+      aggiornaGrafo();   // a new width lays the graph out again
     }).observe(svg);
   }
 
@@ -1275,12 +1607,14 @@
   }
 
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && !document.querySelector('dialog[open]') && !$('mappa-vista').hidden && (fissato || aperto)) deseleziona();
+    if (e.key !== 'Escape' || document.querySelector('dialog[open]') || $('mappa-vista').hidden) return;
+    if (grafo && $('mappa-grafo').clientWidth) chiudiGrafo();   // first out of the graph, the goal still fixed; then as before
+    else if (fissato || aperto) deseleziona();
   });
   // un clic fuori dal task evidenziato (e dai satelliti, dalla lista e dai dialog) toglie l'evidenziazione
   document.addEventListener('click', e => {
     const dopoTrascinamento = trascinato; trascinato = false;   // il clic che segue uno spostamento non conta
-    if (dopoTrascinamento || !selezione || $('mappa-vista').hidden || e.target.closest('#mappa-dettaglio .task, #mappa-dettaglio summary, #mappa-satelliti .sat, #mappa-lista, .mappa-zoom, dialog')) return;
+    if (dopoTrascinamento || !selezione || $('mappa-vista').hidden || e.target.closest('#mappa-dettaglio .task, #mappa-dettaglio summary, #mappa-satelliti .sat, .grafo-azioni, #mappa-lista, .mappa-zoom, dialog')) return;
     selezione = null; pannello();
   });
   document.addEventListener('visibilitychange', () => { if (!document.hidden && !$('mappa-vista').hidden) carica(); });

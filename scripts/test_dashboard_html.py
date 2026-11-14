@@ -306,6 +306,124 @@ class HtmlDashboard(unittest.TestCase):
             "soloVuoto": "vuoto",
         })
 
+    def test_il_grafo_dell_obiettivo_va_a_righe(self):
+        # the goal graph's pure layout runs alone in node, on realistic plan shapes: rows, ghosts, cycles, done, wraps
+        import shutil, subprocess, tempfile
+        if not shutil.which("node"):
+            self.skipTest("node non c'è")
+        js = (D / "mappa.js").read_text(encoding="utf-8")
+        corpo = js[js.index("  // ---- grafo dell'obiettivo: impaginazione pura"):js.index("  // ---- zoom e spostamento")]
+        prova = r"""
+const GRAFO = eval(require('fs').readFileSync(process.argv[1], 'utf8') + ';GRAFO');   // the functions leak out of eval, a const does not
+// t(id, goal, dopo, stato): a task as the server sends it, with its node
+const t = (id, obiettivo, dopo, stato) => ({ id, testo: id, data: null, stato: stato || 'da_fare', obiettivo, dopo: dopo || [], nodo: 'n' });
+const goal = (slug, tutti) => ({ slug, task: tutti.filter(x => x.obiettivo === slug) });
+const righe = (o, tutti, fatti) => { const n = nodiGrafo(o, tutti, fatti), s = stratiGrafo(n);
+  const r = []; for (const x of n) (r[s.strato.get(x.chiave)] = r[s.strato.get(x.chiave)] || []).push(x.t.id + (x.fantasma ? '?' + x.fantasma : ''));
+  return r.map(z => z.join(',')); };
+// every segment of every arrow stays clear of every box but its own two ends
+const libere = (g) => g.archi.every(a => {
+  const num = a.d.match(/-?[\d.]+/g).map(Number), pt = [[num[0], num[1]]];
+  let i = 2; for (const c of a.d.slice(1).match(/[VH]/g)) { const [x, y] = pt[pt.length - 1]; pt.push(c === 'V' ? [x, num[i++]] : [num[i++], y]); }
+  return [...g.posti.values()].filter(b => b.chiave !== a.da && b.chiave !== a.a).every(b => pt.slice(1).every((q, j) => {
+    const p = pt[j], x0 = Math.min(p[0], q[0]), x1 = Math.max(p[0], q[0]), y0 = Math.min(p[1], q[1]), y1 = Math.max(p[1], q[1]);
+    return x1 <= b.x || x0 >= b.x + b.w || y1 <= b.y || y0 >= b.y + b.h; })); });
+const out = {};
+// a diamond, and t8 feeds a task of another goal
+const hn = ['t1', 't2:t1', 't3:t1', 't4:t3', 't5:t1', 't6:t2,t3,t4,t5', 't7:t6', 't8:t7', 't9:t8'].map(s => { const [id, d] = s.split(':'); return t(id, 'hn', d ? d.split(',') : []); });
+const tutti1 = [...hn, t('h15', 'secondo', ['t8']), t('h9', 'secondo', [])];
+out.diamante = righe(goal('hn', tutti1), tutti1, false);
+const g1 = impaginaGrafo(nodiGrafo(goal('hn', tutti1), tutti1, false), 480, 56);
+out.diamanteStretto = { perRiga: g1.perRiga, lineeRiga1: g1.strati[1].linee, radici: g1.archi.filter(a => a.radice).length, archi: g1.archi.length, libere: libere(g1) };
+out.diamanteLargo = impaginaGrafo(nodiGrafo(goal('hn', tutti1), tutti1, false), 1400, 56).strati.map(s => s.linee).join('');
+// nine rows, w-uso (same goal) feeds s9 five rows below
+const st = ['w-base', 'w-uso:w-base', 's1', 's2:s1', 's3:s1,s2', 's4:s3', 's5:s3,s4', 's6:s5', 's7:s6', 's8:s7', 's9:s6,w-uso', 's10:s8,s9'].map(s => { const [id, d] = s.split(':'); return t(id, 'st', d ? d.split(',') : []); });
+out.nove = righe(goal('st', st), st, false);
+const g2 = impaginaGrafo(nodiGrafo(goal('st', st), st, false), 700, 56);
+out.noveLibere = libere(g2);
+out.noveAlto = g2.alto > 9 * 100;
+// no arrow runs in the left gutter, where the bracket of a wrapped row sits
+out.fuoriDalMargine = [g1, impaginaGrafo(nodiGrafo(goal('st', st), st, false), 480, 56)].every(g => g.archi.every(a => {
+  const num = a.d.match(/-?[\d.]+/g).map(Number); let x = num[0], i = 2, ok = x >= GRAFO.lato;
+  for (const c of a.d.slice(1).match(/[VH]/g)) { if (c === 'H') { x = num[i]; ok = ok && x >= GRAFO.lato; } i++; }
+  return ok; }));
+// ghosts: a blocker in another goal sits just above its waiter, one in no goal too; a dependent sits below; not expanded further
+const gh = [t('a', 'g'), t('b', 'g', ['a']), t('c', 'g', ['b']), t('d', 'g', ['c', 'x', 'y']), t('x', 'altro', ['w']), t('w', 'altro'), t('y', null), t('z', 'altro', ['b'])];
+out.fantasmi = righe(goal('g', gh), gh, false);
+// a cycle and what waits on it go to a last row; the rest is laid out as usual; an id held twice is no edge
+const cy = [t('p', 'c', ['q']), t('q', 'c', ['p']), t('r', 'c', ['p']), t('s', 'c'), t('u', 'c', ['dd']), t('dd', 'c'), t('dd', 'altro')];
+cy[6].testo = 'dd2';
+const sc = stratiGrafo(nodiGrafo(goal('c', cy), cy, false));
+out.ciclo = righe(goal('c', cy), cy, false);
+out.avanzo = [...sc.avanzo].sort().join(',');
+// done hidden by default; shown, they are laid out too (their links included)
+const ca = [t('c1', 'ca', [], 'fatto'), t('c2', 'ca', ['c1'], 'fatto'), t('c6', 'ca', ['c2']), t('c7', 'ca', ['c6']), t('c8', 'ca', ['c6']), t('c9', 'ca', ['c7', 'c8']), t('e', 'altro', ['c9'], 'fatto')];
+out.senzaFatti = righe(goal('ca', ca), ca, false);
+out.conFatti = righe(goal('ca', ca), ca, true);
+// barycenter: the row below follows its blockers left to right, not plan order
+const bc = [t('l', 'b'), t('r', 'b'), t('sotto-r', 'b', ['r']), t('sotto-l', 'b', ['l'])];
+const g3 = impaginaGrafo(nodiGrafo(goal('b', bc), bc, false), 1000, 56);
+out.baricentro = g3.strati[1].chiavi.join(',');
+// a first row wrapped onto two lines: the goal links to its first line only, the bracket ties the second
+out.radiciPrimaLinea = impaginaGrafo(nodiGrafo(goal('b', bc), bc, false), 300, 56).archi.filter(a => a.radice).map(a => a.a).join(',');
+// no shown task: just the root
+const g4 = impaginaGrafo([], 800, 56);
+out.vuoto = [g4.strati.length, g4.archi.length, g4.alto];
+console.log(JSON.stringify(out));
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "grafo.js"
+            f.write_text(corpo, encoding="utf-8")
+            r = subprocess.run(["node", "-e", prova, str(f)], capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            out = json.loads(r.stdout)
+        self.assertEqual(out["diamante"], ["t1", "t2,t3,t5", "t4", "t6", "t7", "t8", "t9,h15?altro obiettivo"])
+        # 480 px: two boxes per line, so the parallel row wraps onto two lines; one root link (t1), twelve dependency arrows
+        self.assertTrue(out["fuoriDalMargine"])
+        self.assertEqual(out["diamanteStretto"], {"perRiga": 2, "lineeRiga1": 2, "radici": 1, "archi": 13, "libere": True})
+        self.assertEqual(out["diamanteLargo"], "1111111")
+        self.assertEqual(out["nove"], ["w-base,s1", "w-uso,s2", "s3", "s4", "s5", "s6", "s7,s9", "s8", "s10"])
+        self.assertTrue(out["noveLibere"])   # w-uso -> s9 skips four rows through a free lane
+        self.assertTrue(out["noveAlto"])
+        self.assertEqual(out["fantasmi"], ["a", "b", "c,x?altro obiettivo,y?senza obiettivo,z?altro obiettivo", "d"])
+        self.assertEqual(out["ciclo"], ["s,u,dd", "p,q,r"])
+        self.assertEqual(out["avanzo"], "|p,|q,|r")
+        self.assertEqual(out["senzaFatti"], ["c6", "c7,c8", "c9"])
+        self.assertEqual(out["conFatti"], ["c1", "c2", "c6", "c7,c8", "c9", "e?altro obiettivo"])
+        self.assertEqual(out["baricentro"], "|sotto-l,|sotto-r")
+        self.assertEqual(out["radiciPrimaLinea"], "|l")
+        self.assertEqual(out["vuoto"], [0, 0, 114])
+
+    def test_la_vista_del_grafo_si_apre_e_si_chiude(self):
+        js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")
+        corpo = lambda nome: js[js.index(nome):js.index("\n  }\n", js.index(nome))]
+        # the band box opens the graph; the panel chip only selects the goal
+        self.assertIn("G.addEventListener('click', () => apriGrafo(o.slug));", js)
+        self.assertNotIn("apriGrafo", corpo("function segnoObiettivo"))
+        # Esc leaves the graph before it deselects; a pick in the graph is not undone by the click that bubbles to the page
+        self.assertLess(js.index("if (grafo && $('mappa-grafo').clientWidth) chiudiGrafo();"), js.index("else if (fissato || aperto) deseleziona();"))
+        self.assertIn(".grafo-azioni", js[js.index("document.addEventListener('click'"):])
+        self.assertEqual(corpo("function disegnaGrafo").count("e.stopPropagation()"), 2)   # the root and every box
+        # every box is a focusable button with a name; the arrows have their own marker (the map's lives in a hidden svg)
+        grafo = corpo("function disegnaGrafo")
+        for atteso in ("tabindex: 0, role: 'button', 'aria-label': etichetta", "'aspetta: '", "'sblocca: '", "'grafo-freccia'", "anima(box", "strokeDashoffset", "if (!conMoto) return;"):
+            self.assertIn(atteso, grafo, atteso)
+        self.assertIn("aggiornaGrafo()", corpo("function pannello"))
+        # opening the graph leaves the map's view alone (a framed node stays framed underneath for «Mappa»)
+        self.assertIn("if (!grafo) torna();", corpo("function scegliObiettivo"))
+        self.assertLess(corpo("function apriGrafo").index("grafo = true"), corpo("function apriGrafo").index("scegliObiettivo(slug)"))
+        # a goal gone while the focus is in its graph: the focus goes to the panel title, never to the page
+        agg = corpo("function aggiornaGrafo")
+        self.assertLess(agg.index("box.contains(document.activeElement)"), agg.index("box.replaceChildren()"))
+        self.assertIn("if (dentro) fuocoAlPannello();", agg)
+        # the map underneath keeps its size (visibility, not display); no graph on phones, where the list groups by row
+        self.assertRegex(css, r"\.mappa-box\.con-grafo #mappa-svg[^{]*\{ visibility: hidden; \}")
+        self.assertRegex(css, r"@media \(max-width: 760px\) \{\n  #mappa-svg, \.legenda, \.mappa-zoom, \.mappa-grafo \{ display: none; \}")
+        self.assertIn("'Passo ' + (i + 1)", corpo("function passiLista"))
+        self.assertIn("passiLista(o)", corpo("function lista()"))
+        regole = css[css.index(".mappa-grafo {"):css.index(".grafo-nota")]
+        self.assertNotRegex(regole, r"#[0-9a-fA-F]{3,6}\b|rgb\(")   # theme variables only, so the dark theme works
+
     def test_in_ritardo_e_bloccato_resta_rosso(self):
         # a late task that waits is never the next action: the spec wants it flagged, and the grey of «in attesa» must not hide the red
         js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")

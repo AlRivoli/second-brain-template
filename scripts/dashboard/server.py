@@ -1347,7 +1347,7 @@ def task_social(vault):
                             "stato": "da_fare", "ritardo": False, "bozza": rete, "_progetto": b["progetto"],
                             "stima": None, "entro": None, "entroCalcolato": False, "senzaStima": False,
                             # drafts are outside the dependency graph: always ready, nothing to wait for
-                            "id": None, "chi": None, "derivato": "pronto", "errore": None, "mancanti": [], "aspetta": [], "obiettivo": None,
+                            "id": None, "chi": None, "derivato": "pronto", "errore": None, "mancanti": [], "aspetta": [], "dopo": [], "obiettivo": None,
                             "repo": [], "repoIgnoti": [], "stessoRepo": []})
     return out
 
@@ -1440,6 +1440,8 @@ def mappa(adesso, piano_file=None, vault=None):
         t = {"data": v["data"], "testo": v["testo"], "vista": v["vista"], "stato": v["stato"], "ritardo": ritardo,
              "id": v["marcatori"].get("id"), "chi": v["marcatori"].get("chi"), "derivato": d["derivato"],
              "errore": d["errore"], "mancanti": d["mancanti"], "aspetta": [], "obiettivo": v["marcatori"].get("obiettivo"),
+             # every resolved blocker id, done ones too (`aspetta` holds only the open ones): the goal graph draws them all. Ids only.
+             "dopo": [r for r in dict.fromkeys(v["marcatori"].get("dopo", ())) if r not in d["mancanti"]],
              "repo": [r for r in nomi if r in nodo["repo"]], "repoIgnoti": [r for r in nomi if r not in nodo["repo"]], "stessoRepo": [],
              "stima": dipendenze.ore_stima(v["marcatori"].get("stima"), calendario["ore_giorno"]),
              "entro": entro.isoformat() if entro else None, "entroCalcolato": calcolato, "senzaStima": i in senza_stima}

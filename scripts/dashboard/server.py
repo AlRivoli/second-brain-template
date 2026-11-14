@@ -754,8 +754,11 @@ def progetti_indice(vault):
         nome = m.group(1)
         stato = vault / "projects" / nome / "STATE.md"
         repo = repo_di(stato.read_text(encoding="utf-8")) if stato.exists() else []
+        per_nome, doppi = dipendenze.nomi_repo(repo)
         out[nome.lower()] = {"nome": nome, "priorita": celle[5] if len(celle) > 5 else None,
-                             "cartelle": [Path(r) for r in repo if r != "nessuno"]}
+                             "cartelle": [Path(r) for r in repo if r != "nessuno"],
+                             # the allowlist of `repo:` markers, from the raw strings: a duplicated short name is left out
+                             "nomi_repo": list(per_nome), "percorsi_repo": per_nome, "repo_doppi": doppi}
     return out
 
 
@@ -766,6 +769,8 @@ PRIORITA = ("alta", "media", "bassa")
 REPO_MASSIMO = 400
 # i soli codici d'errore che vanno al client: il testo di un'altra eccezione può contenere un percorso del disco
 CODICI_PROGETTO = {"nome", "repo", "stack", "priorita", "lavoro", "esiste", "template", "riga", "harness", "spento", "senza-repo", "righe"}
+# the same allow-list for the map's routes (stato, avvia, nuovo): the codes avvia_claude, imposta_stato and aggiungi_voce raise
+CODICI_MAPPA = {"doppia", "tuo", "in_attesa", "repo", "scegli_repo", "cartella", "ripetuto", "apertura"}
 RIGA_REPO = re.compile(r"^- \*\*Repo:\*\* .*$", re.M)
 
 
@@ -799,6 +804,31 @@ def _in_cartella_riservata(percorso, vault, riservate):
     p = os.path.normpath(str(percorso)).casefold()
     basi = {os.path.normpath(str(radice / "projects" / n)).casefold() for radice in (vault, vault.resolve()) for n in riservate}
     return any(p == b or p.startswith(b + os.sep) for b in basi)
+
+
+def _cartella_avviabile(cartella, vault):
+    """The resolved folder Claude (a cloud model) may start in, or None (ADR-002: reserved notes never reach it).
+    None for a path not on a local disk, a missing folder, a filesystem root, a path inside lavoro, _private or the reserved
+    folder of the setup (by its text and once resolved: a link can lead there) and a folder that contains one of them, except
+    the vault root itself, where the vault's deny rules apply. The text is checked before touching the disk."""
+    riservate = _cartelle_riservate(vault)
+    if not _percorso_locale(cartella) or _in_cartella_riservata(cartella, vault, riservate):
+        return None
+    try:  # an OSError or a symlink loop (RuntimeError) must not reach the client: its text can hold a disk path
+        risolta = cartella.resolve()
+        if not risolta.is_dir():
+            return None
+        vault_risolto = vault.resolve()
+    except (OSError, RuntimeError):
+        return None
+    if risolta.parent == risolta or not _percorso_locale(risolta) or _in_cartella_riservata(risolta, vault, riservate):
+        return None
+    testo = os.path.normpath(str(risolta)).casefold()
+    basi = {os.path.normpath(str(radice / "projects" / n)).casefold() for radice in (vault, vault_risolto) for n in riservate}
+    # Never a root here, so testo has no trailing separator. O(k) time, k = reserved folders.
+    if testo != os.path.normpath(str(vault_risolto)).casefold() and any(b.startswith(testo + os.sep) for b in basi):
+        return None
+    return risolta
 
 
 def _percorso_locale(percorso):
@@ -1008,19 +1038,55 @@ def imposta_harness(nome, decisione, vault=None, oggi=None):
 
 
 def _cartella_di(tipo, info, vault):
-    """Cartella di un nodo: prima del progetto che esiste, altrimenti il vault; None per i progetti del lavoro o se risolve nella loro cartella."""
-    lavoro = (vault / "projects" / "lavoro").resolve()
+    """Cartella di un nodo: prima del progetto che esiste, altrimenti il vault; None per i progetti del lavoro
+    o se la cartella non passa _cartella_avviabile (una radice, una cartella riservata o che ne contiene una)."""
     if (info or {}).get("lavoro"):
         return None
     scelta = vault if tipo != "progetto" else next((c for c in (info or {}).get("cartelle", []) if c.exists()), vault)
-    if scelta.resolve().is_relative_to(lavoro):  # resolve(): un symlink verso lavoro non passa
-        return None
-    return scelta
+    return scelta if _cartella_avviabile(scelta, vault) else None
 
 
 def cartella_nodo(nodo, vault):
     info = progetti_indice(vault).get(nodo["nome"].lower()) if nodo["tipo"] == "progetto" else None
     return _cartella_di(nodo["tipo"], info, vault)
+
+
+def cartella_per_avvio(nodo, task, repo, vault):
+    """The folder "Avvia" opens for a task of the node, or RuntimeError(code) before any side effect: repo, scegli_repo, cartella.
+    `repo` comes from the client: it is only compared with the candidate short names, never joined or resolved as a path.
+    Candidates: the task's valid `repo:` markers, or with none every repo of the project (twins are never candidates).
+    A project with a twin needs a valid `repo:` on the task: the names left are not the full choice, so none is offered.
+    One candidate is used without asking; only a project with no `Repo` line at all, or a node that is not a project,
+    keeps the old folder (the vault). A chosen or implied repo whose folder is missing never falls back to the vault.
+    Returns the resolved folder, the one _cartella_avviabile checked, so the launch opens exactly that.
+    O(r) time and space, r = repos of the project."""
+    info = progetti_indice(vault).get(nodo["nome"].lower()) if nodo["tipo"] == "progetto" else None
+    if (info or {}).get("lavoro"):
+        raise RuntimeError("cartella")
+    percorsi = (info or {}).get("percorsi_repo", {})
+    # Re-checked against this fresh read of the STATE: the task's names came from an earlier one
+    del_task = list(dict.fromkeys(r for r in task["repo"] if r in percorsi))
+    if not del_task and (info or {}).get("repo_doppi"):
+        raise RuntimeError("cartella")
+    candidati = del_task or list(percorsi)
+    if repo is not None:
+        if repo not in candidati:
+            raise RuntimeError("repo")
+        scelto = repo
+    elif len(candidati) == 1:
+        scelto = candidati[0]
+    elif candidati:
+        raise RuntimeError("scegli_repo")
+    elif (info or {}).get("cartelle"):  # Repo lines but no usable name (a root, a path ending in ..): no folder rather than a guess
+        raise RuntimeError("cartella")
+    else:
+        scelto = None
+    # The vault fallback goes through _cartella_di, then both paths through the same guard
+    cartella = Path(percorsi[scelto]) if scelto is not None else _cartella_di(nodo["tipo"], info, vault)
+    risolta = _cartella_avviabile(cartella, vault) if cartella is not None else None
+    if risolta is None:
+        raise RuntimeError("cartella")
+    return risolta
 
 
 def _str_o_none(p):
@@ -1059,7 +1125,8 @@ def task_social(vault):
                 out.append({"data": None, "testo": rete + "/" + b["nome"], "vista": rete.capitalize().replace("Linkedin", "LinkedIn") + ": " + titolo,
                             "stato": "da_fare", "ritardo": False, "bozza": rete, "_progetto": b["progetto"],
                             # drafts are outside the dependency graph: always ready, nothing to wait for
-                            "id": None, "chi": None, "derivato": "pronto", "errore": None, "mancanti": [], "aspetta": [], "obiettivo": None})
+                            "id": None, "chi": None, "derivato": "pronto", "errore": None, "mancanti": [], "aspetta": [], "obiettivo": None,
+                            "repo": [], "repoIgnoti": [], "stessoRepo": []})
     return out
 
 
@@ -1083,14 +1150,14 @@ def mappa(adesso, piano_file=None, vault=None):
     def nuovo(i):
         nodo = {"nome": i["nome"], "tipo": "progetto", "priorita": i["priorita"],
                 "haCartella": _cartella_di("progetto", i, vault) is not None,
-                "cartella": _str_o_none(_cartella_di("progetto", i, vault)), "task": []}
+                "cartella": _str_o_none(_cartella_di("progetto", i, vault)), "repo": i.get("nomi_repo", []), "task": []}
         voce = harness.get(i["nome"].lower())
         if voce and not i.get("lavoro"):
             nodo["harness"] = {"stato": voce["stato"], "decisione": voce["decisione"], "data": voce["data_decisione"], "report": voce["report"]}
         return nodo
     nodi = {n: nuovo(i) for n, i in indice.items() if not i.get("lavoro")}  # i progetti del lavoro senza voci non compaiono
     if "social" not in nodi:  # nodo fisso: LinkedIn e Instagram. Le sue bozze non entrano in prossima azione né nei conteggi (non sono righe di piano.md)
-        nodi["social"] = {"nome": "Social", "tipo": "argomento", "priorita": None, "haCartella": True, "cartella": str(vault), "task": task_social(vault)}
+        nodi["social"] = {"nome": "Social", "tipo": "argomento", "priorita": None, "haCartella": True, "cartella": str(vault), "repo": [], "task": task_social(vault)}
         for t in nodi["social"]["task"]:  # la bozza con «Progetto: <nome>» di un progetto di INDEX compare anche sul suo nodo (mai quelli del lavoro: non sono in `nodi`)
             p = nodi.get(str(t.pop("_progetto") or "").lower())
             if p and p["tipo"] == "progetto":
@@ -1109,20 +1176,34 @@ def mappa(adesso, piano_file=None, vault=None):
             nodi[chiave] = nuovo(indice[chiave])
         if chiave not in nodi:
             nodi[chiave] = {"nome": v["tag"] or "Senza nodo", "tipo": "argomento" if v["tag"] else "senza",
-                            "priorita": None, "haCartella": True, "cartella": str(vault), "task": []}
+                            "priorita": None, "haCartella": True, "cartella": str(vault), "repo": [], "task": []}
         nodo = nodi[chiave]
         momento = _momento(v["data"]) if v["data"] else None
         momento = momento[0] if momento else None
         aperta = v["stato"] != "fatto"
         ritardo = bool(aperta and momento and momento < adesso)
         d = derivati[i]
+        nomi = v["marcatori"].get("repo", [])  # a marker is only ever compared with the project's short names, never used as a path
         t = {"data": v["data"], "testo": v["testo"], "vista": v["vista"], "stato": v["stato"], "ritardo": ritardo,
              "id": v["marcatori"].get("id"), "chi": v["marcatori"].get("chi"), "derivato": d["derivato"],
-             "errore": d["errore"], "mancanti": d["mancanti"], "aspetta": [], "obiettivo": v["marcatori"].get("obiettivo")}
+             "errore": d["errore"], "mancanti": d["mancanti"], "aspetta": [], "obiettivo": v["marcatori"].get("obiettivo"),
+             "repo": [r for r in nomi if r in nodo["repo"]], "repoIgnoti": [r for r in nomi if r not in nodo["repo"]], "stessoRepo": []}
         nodo["task"].append(t)
         task_di[i], nodo_di[i] = t, nodo
         if aperta:
             aperte.append((nodo, t, ritardo, momento, nodo["priorita"] == "alta"))
+    # Same-repo warning, per node: collect the repos of its running tasks in a set, then intersect with each ready task's repos.
+    # O(V*r) time (r = repos per task, small), O(V*r) space. A task's repos are its valid `repo:`; with none and a
+    # project that has one repo, that repo. Unknown names are never used: a task naming only those falls back the same way.
+    def repo_del(t, nodo):
+        return t["repo"] or (nodo["repo"] if len(nodo["repo"]) == 1 else [])
+    in_corso = {}
+    for t, nodo in zip(task_di, nodo_di):
+        if t and t["derivato"] in ("in_corso", "incoerente"):
+            in_corso.setdefault(id(nodo), set()).update(repo_del(t, nodo))
+    for t, nodo in zip(task_di, nodo_di):
+        if t and t["derivato"] == "pronto":
+            t["stessoRepo"] = [r for r in repo_del(t, nodo) if r in in_corso.get(id(nodo), ())]
     for i, t in enumerate(task_di):  # a blocking row is open, so it always has a task and a node
         if t:
             t["aspetta"] = [{"id": voci[j]["marcatori"].get("id"), "vista": voci[j]["vista"], "nodo": nodo_di[j]["nome"],
@@ -1291,10 +1372,11 @@ def _apri_console_windows(cartella, prompt, esegui=None, quale=None):
         raise RuntimeError("apertura")
 
 
-def avvia_claude(data, testo, esegui=None, piano_file=None, vault=None, cartella_avvii=None, sistema=None, adesso=time.monotonic, quale=None):
-    """Apre un terminale con `claude` nella cartella del nodo della voce e la mette in corso. macOS (Terminale) e Windows (console nuova).
+def avvia_claude(data, testo, esegui=None, piano_file=None, vault=None, cartella_avvii=None, sistema=None, adesso=time.monotonic, quale=None, repo=None):
+    """Apre un terminale con `claude` nel repo del task (cartella_per_avvio; `repo` è il nome breve scelto dall'utente, o None)
+    e la mette in corso. macOS (Terminale) e Windows (console nuova).
     NotImplementedError: altro sistema. LookupError: voce assente. RuntimeError con codice: doppia, tuo,
-    in_attesa (ogni stato che non sia pronto o in corso, anche fatto), cartella, ripetuto, apertura.
+    in_attesa (ogni stato che non sia pronto o in corso, anche fatto), repo, scegli_repo, cartella, ripetuto, apertura.
     Il testo della voce non finisce mai in una stringa di shell o di AppleScript: su macOS sta in un file letto da `cat`,
     su Windows è un argomento di claude.exe lanciato senza shell."""
     sistema = sistema or sys.platform
@@ -1313,9 +1395,7 @@ def avvia_claude(data, testo, esegui=None, piano_file=None, vault=None, cartella
         raise RuntimeError("tuo")
     if task["derivato"] not in ("pronto", "in_corso"):  # allow-list: fatto, a wait, an error or any future state stays put
         raise RuntimeError("in_attesa")
-    cartella = cartella_nodo(nodo, vault)
-    if cartella is None:
-        raise RuntimeError("cartella")
+    cartella = cartella_per_avvio(nodo, task, repo, vault)
     with open(piano_file, encoding="utf-8", newline="") as f:  # prima di scrivere o aprire qualsiasi cosa: il file grezzo vede anche i [x] senza tag
         _trova_voce(f.read().splitlines(keepends=True), data, testo)
     chiave = (data, testo)
@@ -1851,8 +1931,10 @@ class Gestore(BaseHTTPRequestHandler):
             data, testo = corpo.get("data"), corpo["testo"]
             stato_nuovo = corpo["stato"] if azione == "stato" else None
             tag = corpo["tag"] if azione == "nuovo" else None
+            repo = corpo.get("repo") if azione == "avvia" else None  # optional short name; only ever compared, never a path
             valido = (isinstance(testo, str) and (data is None or isinstance(data, str))
-                      and (azione != "stato" or isinstance(stato_nuovo, str)) and (azione != "nuovo" or isinstance(tag, str)))
+                      and (azione != "stato" or isinstance(stato_nuovo, str)) and (azione != "nuovo" or isinstance(tag, str))
+                      and (repo is None or (isinstance(repo, str) and 1 <= len(repo) <= 60)))
         except (KeyError, TypeError, AttributeError):
             valido = False
         if not valido:
@@ -1860,7 +1942,7 @@ class Gestore(BaseHTTPRequestHandler):
             return
         try:
             if azione == "avvia":
-                esito = avvia_claude(data, testo)
+                esito = avvia_claude(data, testo, repo=repo)
             elif azione == "nuovo":
                 esito = {"ok": True, "riga": aggiungi_voce(tag, testo)}
             else:
@@ -1876,7 +1958,7 @@ class Gestore(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         except RuntimeError as e:
-            self._json({"errore": str(e)}, 409)
+            self._json({"errore": str(e) if str(e) in CODICI_MAPPA else "errore"}, 409)
             return
         except OSError:
             self.send_error(500)

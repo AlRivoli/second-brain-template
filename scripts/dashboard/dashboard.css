@@ -627,6 +627,14 @@ g.obiettivo:hover .obiettivo-box, g.obiettivo:focus-visible .obiettivo-box, g.ob
 .task.st-in_attesa .task-testo.ritardo { color: var(--late); }
 .task.errore .motivo, .task-lista.errore .motivo { color: var(--late); }
 .tocca-a-te { align-self: center; font-size: 12px; }
+/* repos: a chip per repo of a task, the names under a node with more than one; the same-repo warning is a word, not only a colour */
+.repo-elenco { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.repo { font-family: var(--mono); font-size: 11.5px; line-height: 18px; padding: 0 6px; border: 1px solid var(--border); border-radius: var(--radius-chip); background: var(--raised); color: var(--text); overflow-wrap: anywhere; }
+.task > .repo-elenco, .task > .avviso-repo { align-self: flex-start; }
+.nodo .repo-nodo { font-family: var(--mono); font-size: calc(10.5px / var(--k, 1)); fill: var(--muted); text-anchor: middle; }
+#mappa-avvia .scelta-repo { margin: 4px 0 0; padding: 6px 14px 10px; border: 1px solid var(--border); border-radius: var(--radius-inner); }
+#mappa-avvia .scelta-repo legend { padding: 0 4px; font-size: 13px; color: var(--muted); }
+#mappa-avvia .scelta-repo label { display: flex; align-items: center; gap: 8px; min-height: 32px; font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; cursor: pointer; }
 .gruppo { font-size: 12px; font-weight: 600; color: var(--muted); margin: 16px 0 2px; }
 .gruppo-fatti summary .gruppo { display: inline; }
 .mappa-lista .gruppo { margin: 8px 0 2px; }
@@ -656,7 +664,8 @@ button.link:hover { text-decoration: underline; background: none; }
   .mappa-box { height: auto; padding: 16px; overflow: visible; }
   .mappa-testa { position: static; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
   .task-lista { flex-wrap: wrap; }
-  .task-lista .sub { flex-basis: 100%; padding-left: 16px; margin: 0; }
+  .task-lista .sub, .task-lista .repo-elenco { flex-basis: 100%; padding-left: 16px; margin: 0; }
+  .task-lista .avviso-repo { margin-left: 16px; }
   .mappa-lista { position: static; width: auto; height: auto; overflow: visible; clip-path: none; white-space: normal; }
   .saluto { font-size: 30px; }
 }

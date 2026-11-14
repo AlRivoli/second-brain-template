@@ -98,8 +98,43 @@ class StatiDerivatiTest(unittest.TestCase):
 class LeggiProblemiTest(unittest.TestCase):
     def test_leggi_voci_con_numero_di_riga(self):
         v = d.leggi_voci("## A\n- [ ] uno id:a\nprosa\n- [~] due dopo:a\n")
-        self.assertEqual(v, [{"riga": 2, "stato": "da_fare", "testo": "uno", "marcatori": {"id": "a"}},
-                             {"riga": 4, "stato": "in_corso", "testo": "due", "marcatori": {"dopo": ["a"]}}])
+        self.assertEqual(v, [{"riga": 2, "stato": "da_fare", "testo": "uno", "tag": None, "marcatori": {"id": "a"}},
+                             {"riga": 4, "stato": "in_corso", "testo": "due", "tag": None, "marcatori": {"dopo": ["a"]}}])
+
+    def test_leggi_voci_ha_il_tag(self):
+        self.assertEqual([v["tag"] for v in d.leggi_voci("## A\n- [ ] #Progetto-A x\n- [ ] senza\n")], ["progetto-a", None])
+
+    def test_nomi_repo(self):
+        n, doppi = d.nomi_repo(["C:\\src\\p\\api", "C:\\src\\p\\web", "nessuno", "", "D:\\altro\\api"])
+        self.assertEqual((list(n), doppi), (["web"], ["api"]))
+
+    def test_nomi_repo_percorsi_posix_e_windows_su_ogni_sistema(self):
+        n, doppi = d.nomi_repo(["/srv/p/api", "C:\\src\\p\\web\\", "/srv/x/cli/"])
+        self.assertEqual((n, doppi), ({"api": "/srv/p/api", "web": "C:\\src\\p\\web\\", "cli": "/srv/x/cli/"}, []))
+
+    def test_nomi_repo_senza_radici_ne_punti(self):
+        # a root, a drive or a path ending in . or .. has no folder name: never a candidate, on any OS
+        n, doppi = d.nomi_repo(["C:\\", "C:", "C:\\.", "C:\\x\\..", "/", "/tmp/.", "/srv/x/..", "D:\\a\\api"])
+        self.assertEqual((n, doppi), ({"api": "D:\\a\\api"}, []))
+
+    def test_nomi_repo_la_stessa_riga_ripetuta_non_e_un_doppio(self):
+        # same as the server, which drops repeated identical paths before naming them
+        n, doppi = d.nomi_repo(["C:\\src\\p\\api", " C:\\src\\p\\api "])
+        self.assertEqual((n, doppi), ({"api": "C:\\src\\p\\api"}, []))
+
+    def test_problemi_repo(self):
+        voci = d.leggi_voci("## A\n- [ ] #progetto-a a repo:api\n- [ ] #progetto-a b repo:zz\n- [ ] c repo:api\n")
+        trovati = d.problemi(voci, repo={"progetto-a": {"api", "web"}})
+        self.assertEqual([r for r, _ in trovati], [3, 4])
+        self.assertIn("repo:zz non è un repo di progetto-a: usa uno di api, web", trovati[0][1])
+        self.assertIn("repo:api su un task senza progetto", trovati[1][1])
+        self.assertEqual(d.problemi(voci), [])
+
+    def test_problemi_repo_con_tag_di_un_argomento_o_progetto_senza_repo(self):
+        voci = d.leggi_voci("- [ ] #idee a repo:api,web\n- [ ] #progetto-a b repo:api\n")
+        trovati = d.problemi(voci, repo={"progetto-a": set()})
+        self.assertEqual([r for r, _ in trovati], [1, 2])
+        self.assertIn("repo:api,web su un task senza progetto", trovati[0][1])
 
     def test_problemi_con_numero_di_riga(self):
         voci = d.leggi_voci("## A\n- [ ] uno id:a\n- [ ] due dopo:zz\n")

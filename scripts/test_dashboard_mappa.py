@@ -190,8 +190,11 @@ def vault_finto(piano):
     return v
 
 
-def mappa_di(piano, obiettivi=None):
+def mappa_di(piano, obiettivi=None, repo=None):
+    """`repo={"alfa": [path, ...]}` replaces the `Repo` lines of that project's STATE."""
     v = vault_finto(piano)
+    for nome, percorsi in (repo or {}).items():
+        (v / "projects" / nome / "STATE.md").write_text("# %s\n%s" % (nome, "".join("- **Repo:** %s\n" % p for p in percorsi)), encoding="utf-8")
     if obiettivi is not None:
         (v / "docs" / "obiettivi.md").write_text(obiettivi, encoding="utf-8")
     return server.mappa(ADESSO, piano_file=v / "docs" / "piano.md", vault=v)
@@ -415,6 +418,56 @@ class ObiettiviMappaTest(unittest.TestCase):
         self.assertEqual(m["obiettivi"][0]["progetti"], ["Senza nodo"])
 
 
+API, WEB = r"C:\codice\api", "/srv/codice/web"  # one backslash path and one slash path: the short name is the same on every OS
+
+
+class RepoMappaTest(unittest.TestCase):
+    def test_repo_dei_nodi_e_dei_task(self):
+        m = mappa_di("## A\n- [ ] #alfa uno repo:api\n- [ ] #alfa due repo:api,zz\n- [ ] #linkedin tre repo:api\n", repo={"alfa": [API, WEB, "nessuno"]})
+        n = {x["nome"]: x for x in m["nodi"]}
+        self.assertEqual(n["alfa"]["repo"], ["api", "web"])
+        self.assertEqual((n["beta"]["repo"], n["linkedin"]["repo"], n["Social"]["repo"]), ([], [], []))
+        t = {x["vista"]: x for x in n["alfa"]["task"]}
+        self.assertEqual((t["uno"]["repo"], t["uno"]["repoIgnoti"]), (["api"], []))
+        self.assertEqual((t["due"]["repo"], t["due"]["repoIgnoti"]), (["api"], ["zz"]))
+        self.assertEqual((n["linkedin"]["task"][0]["repo"], n["linkedin"]["task"][0]["repoIgnoti"]), ([], ["api"]))  # a topic has no repos
+
+    def test_nome_doppio_non_e_nell_allowlist(self):
+        m = mappa_di("## A\n- [ ] #alfa uno repo:api,web\n", repo={"alfa": [API, r"D:\altro\api", WEB]})
+        alfa = next(x for x in m["nodi"] if x["nome"] == "alfa")
+        self.assertEqual((alfa["repo"], alfa["task"][0]["repo"], alfa["task"][0]["repoIgnoti"]), (["web"], ["web"], ["api"]))
+
+    def test_stesso_repo(self):
+        m = mappa_di("## A\n- [~] #alfa corre repo:api\n- [ ] #alfa pronto repo:api\n- [ ] #alfa altro repo:web\n- [ ] #alfa libero\n", repo={"alfa": [API, WEB]})
+        t = {x["vista"]: x for n in m["nodi"] for x in n["task"]}
+        self.assertEqual((t["pronto"]["stessoRepo"], t["altro"]["stessoRepo"], t["libero"]["stessoRepo"]), (["api"], [], []))
+        self.assertEqual(t["corre"]["stessoRepo"], [])  # only ready tasks get the label
+
+    def test_stesso_repo_con_repo_unico_implicito(self):
+        m = mappa_di("## A\n- [~] #alfa a\n- [ ] #alfa b\n- [ ] #alfa c repo:zz\n", repo={"alfa": [API]})
+        t = {x["vista"]: x for n in m["nodi"] for x in n["task"]}
+        self.assertEqual((t["b"]["stessoRepo"], t["c"]["stessoRepo"]), (["api"], ["api"]))  # an unknown name is never used: same fallback as no marker
+        m = mappa_di("## A\n- [~] #alfa a\n- [ ] #alfa b repo:zz\n", repo={"alfa": [API]})
+        self.assertEqual({x["vista"]: x for n in m["nodi"] for x in n["task"]}["b"]["stessoRepo"], ["api"])
+        m = mappa_di("## A\n- [~] #alfa a repo:api\n- [ ] #alfa b repo:zz\n", repo={"alfa": [API, WEB]})  # two repos: no fallback
+        self.assertEqual({x["vista"]: x for n in m["nodi"] for x in n["task"]}["b"]["stessoRepo"], [])
+
+    def test_stesso_repo_solo_dentro_il_nodo_e_con_task_incoerente(self):
+        m = mappa_di("## A\n- [~] #alfa a repo:api\n- [~] #alfa b dopo:x1 repo:web\n- [ ] #alfa c repo:web\n- [ ] #beta d id:x1\n", repo={"alfa": [API, WEB], "beta": [API]})
+        t = {x["vista"]: x for n in m["nodi"] for x in n["task"]}
+        self.assertEqual(t["b"]["derivato"], "incoerente")
+        self.assertEqual((t["c"]["stessoRepo"], t["d"]["stessoRepo"]), (["web"], []))
+
+    def test_bozze_e_copie_negli_obiettivi(self):
+        m = mappa_di("## A\n- [~] #alfa a repo:api obiettivo:g\n- [ ] #alfa b repo:api,zz obiettivo:g\n", repo={"alfa": [API]})
+        copia = {t["vista"]: t for t in m["obiettivi"][0]["task"]}["b"]
+        self.assertEqual((copia["repo"], copia["repoIgnoti"], copia["stessoRepo"]), (["api"], ["zz"], ["api"]))
+        v = vault_finto("")
+        con_bozze(v, linkedin={"2026-11-01-a.md": "Bozza LinkedIn: primo"})
+        b = server.task_social(v)[0]
+        self.assertEqual((b["repo"], b["repoIgnoti"], b["stessoRepo"]), ([], [], []))
+
+
 class SocialTest(unittest.TestCase):
     def nodo(self, v):
         m = server.mappa(ADESSO, piano_file=v / "docs" / "piano.md", vault=v)
@@ -493,8 +546,16 @@ class FinteEsito:
 
 
 class AvvioTest(unittest.TestCase):
-    def prepara(self, piano="## A\n- [ ] #alfa uno\n"):
+    def prepara(self, piano="## A\n- [ ] #alfa uno\n", repo=None, mancanti=()):
+        """`repo={"alfa": ["api", "web"]}` replaces that project's `Repo` lines with real folders v/repos/<i>/<name>,
+        except the names in `mancanti`, which are listed but never created."""
         v = vault_finto(piano)
+        for nome, brevi in (repo or {}).items():
+            percorsi = [v / "repos" / nome / str(i) / b for i, b in enumerate(brevi)]
+            for p, b in zip(percorsi, brevi):
+                if b not in mancanti:
+                    p.mkdir(parents=True)
+            (v / "projects" / nome / "STATE.md").write_text("# %s\n%s" % (nome, "".join("- **Repo:** %s\n" % p for p in percorsi)), encoding="utf-8")
         server.ULTIMI_AVVII.clear()
         return v, v / "avvii"
 
@@ -523,7 +584,7 @@ class AvvioTest(unittest.TestCase):
             txt = Path(args[3]).with_suffix(".txt").read_text(encoding="utf-8")
             self.assertIn(ostile, txt)
             self.assertIn("(nodo #alfa)", txt)
-            self.assertEqual(r["cartella"], str(v / "repo-alfa"))
+            self.assertEqual(r["cartella"], str((v / "repo-alfa").resolve()))
             if os.name == "posix":  # su Windows i permessi non esistono (e «Avvia» è solo per macOS)
                 self.assertEqual(os.stat(args[3]).st_mode & 0o777, 0o700)
 
@@ -570,7 +631,7 @@ class AvvioTest(unittest.TestCase):
     def test_avvio_repo_inesistente_usa_il_vault(self):
         v, av = self.prepara("## A\n- [ ] #beta uno\n")
         r, _ = self.avvia(v, av, "#beta uno")
-        self.assertEqual(r["cartella"], str(v))
+        self.assertEqual(r["cartella"], str(v.resolve()))
 
     def test_avvio_doppio_clic(self):
         v, av = self.prepara()
@@ -637,9 +698,9 @@ class AvvioTest(unittest.TestCase):
             self.assertTrue(args[1].startswith("Task dal piano"), args[1])  # non può essere letto come un'opzione
             self.assertIn(ostile, args[1])
             self.assertFalse(kw.get("shell"))
-            self.assertEqual(kw["cwd"], str(v / "repo-alfa"))
+            self.assertEqual(kw["cwd"], str((v / "repo-alfa").resolve()))
             self.assertEqual(kw["creationflags"], 0x10)  # CREATE_NEW_CONSOLE
-            self.assertEqual(r["cartella"], str(v / "repo-alfa"))
+            self.assertEqual(r["cartella"], str((v / "repo-alfa").resolve()))
             self.assertFalse(av.exists())  # su Windows non serve nessun file di avvio
             self.assertIn("- [~] #alfa", (v / "docs" / "piano.md").read_text(encoding="utf-8"))
 
@@ -660,14 +721,18 @@ class AvvioTest(unittest.TestCase):
         self.assertEqual(str(c.exception), "apertura")
         self.assertEqual(server.ULTIMI_AVVII, {})
 
-    def assert_rifiutato_senza_effetti(self, piano, testo, codice, sistema):
-        v, av = self.prepara(piano)
+    def assert_rifiutato_senza_effetti(self, piano, testo, codice, sistema, scelto=None, **prepara):
+        self.assert_rifiutato_nel_vault(*self.prepara(piano, **prepara), testo, codice, sistema, scelto)
+
+    def assert_rifiutato_nel_vault(self, v, av, testo, codice, sistema, scelto=None):
+        """The same checks on a vault already prepared (and changed) by the test."""
+        server.ULTIMI_AVVII.clear()
         file = v / "docs" / "piano.md"
         prima = file.read_bytes()
         chiamate = []
         with self.assertRaises(RuntimeError) as c:
             server.avvia_claude(None, testo, esegui=lambda *a, **k: chiamate.append(a), piano_file=file, vault=v, cartella_avvii=av,
-                                sistema=sistema, quale=lambda nome: r"C:\bin\claude.exe")
+                                sistema=sistema, quale=lambda nome: r"C:\bin\claude.exe", repo=scelto)
         self.assertEqual(str(c.exception), codice)
         self.assertEqual(chiamate, [], "nessun terminale aperto")
         self.assertEqual(file.read_bytes(), prima, "piano.md invariato")
@@ -711,7 +776,7 @@ class AvvioTest(unittest.TestCase):
         r, chiamate = self.avvia(v, av, "#alfa uno obiettivo:mappa")
         self.assertTrue(r["avviato"])
         self.assertEqual(len(chiamate), 1)
-        self.assertEqual(r["cartella"], str(v / "repo-alfa"))
+        self.assertEqual(r["cartella"], str((v / "repo-alfa").resolve()))
 
     def test_avvio_pulisce_i_file_vecchi(self):
         v, av = self.prepara()
@@ -721,6 +786,203 @@ class AvvioTest(unittest.TestCase):
         os.utime(vecchio, (1, 1))
         self.avvia(v, av)
         self.assertFalse(vecchio.exists())
+
+    # --- Which repo "Avvia" opens: a name is only ever compared with the project's short names, never used as a path ---
+    DUE = {"alfa": ["api", "web"]}
+
+    def repo_di(self, v, nome, i, progetto="alfa"):
+        return str((v / "repos" / progetto / str(i) / nome).resolve())  # the launch opens the resolved folder
+
+    def test_avvia_usa_il_repo_del_task(self):
+        for testo in ("#alfa uno repo:web", "#alfa uno repo:web,web", "#alfa uno repo:web,zz"):  # duplicates collapse, unknown names are ignored
+            with self.subTest(testo=testo):
+                v, av = self.prepara("## A\n- [ ] %s\n" % testo, repo=self.DUE)
+                r, _ = self.avvia(v, av, testo)
+                self.assertEqual(r["cartella"], self.repo_di(v, "web", 1))
+                v, av = self.prepara("## A\n- [ ] %s\n" % testo, repo=self.DUE)
+                _, chiamate = self.avvia_windows(v, av, testo)
+                self.assertEqual(chiamate[0][1]["cwd"], self.repo_di(v, "web", 1))
+
+    def test_avvia_repo_unico_implicito(self):
+        for testo in ("#alfa uno", "#alfa uno repo:zz"):  # an unknown name is never used: same fallback as no marker
+            with self.subTest(testo=testo):
+                v, av = self.prepara("## A\n- [ ] %s\n" % testo, repo={"alfa": ["api"]})
+                r, _ = self.avvia(v, av, testo)
+                self.assertEqual(r["cartella"], self.repo_di(v, "api", 0))
+
+    def test_avvia_chiede_il_repo_se_ambiguo(self):
+        for testo in ("#alfa uno", "#alfa uno repo:api,web"):
+            for sistema in ("darwin", "win32"):
+                with self.subTest(testo=testo, sistema=sistema):
+                    self.assert_rifiutato_senza_effetti("## A\n- [ ] %s\n" % testo, testo, "scegli_repo", sistema, repo=self.DUE)
+
+    def test_avvia_con_repo_scelto(self):
+        for testo, scelto, i in (("#alfa uno", "web", 1), ("#alfa uno repo:api,web", "api", 0), ("#alfa uno repo:web", "web", 1)):
+            with self.subTest(testo=testo, scelto=scelto):
+                v, av = self.prepara("## A\n- [ ] %s\n" % testo, repo=self.DUE)
+                r, _ = self.avvia(v, av, testo, repo=scelto)
+                self.assertEqual(r["cartella"], self.repo_di(v, scelto, i))
+
+    def test_avvia_rifiuta_repo_non_valido(self):
+        repo = {"alfa": ["api", "web"], "beta": ["altro_progetto_repo"]}
+        for r in ("..\\api", "C:\\Windows", "api/../..", "API", "altro_progetto_repo", "zz",
+                  " api", "api ", "", ".", "..", "/", "nessuno", "repos", "0"):
+            for sistema in ("darwin", "win32"):
+                with self.subTest(repo=r, sistema=sistema):
+                    self._rifiuta(r, sistema, repo)
+        v, _ = self.prepara(repo=repo)
+        for sistema in ("darwin", "win32"):  # the full path of a real repo of the project is a path, not a name
+            with self.subTest(percorso=True, sistema=sistema):
+                self._rifiuta(self.repo_di(v, "api", 0), sistema, repo)
+
+    def _rifiuta(self, scelto, sistema, stati, piano="## A\n- [ ] #alfa uno\n", testo="#alfa uno", codice="repo", **prepara):
+        """assert_rifiutato_senza_effetti with `scelto` sent as the client's `repo` and `stati` as the projects' Repo lines."""
+        self.assert_rifiutato_senza_effetti(piano, testo, codice, sistema, scelto, repo=stati, **prepara)
+
+    def test_avvia_rifiuta_repo_fuori_dai_repo_del_task(self):
+        repo = {"alfa": ["api", "web", "altro"]}
+        for testo, scelto in (("#alfa uno repo:api,web", "altro"), ("#alfa uno repo:api", "web")):
+            for sistema in ("darwin", "win32"):
+                with self.subTest(testo=testo, sistema=sistema):
+                    self._rifiuta(scelto, sistema, repo, "## A\n- [ ] %s\n" % testo, testo)
+
+    def test_avvia_repo_in_un_nodo_senza_repo(self):
+        for testo in ("#beta uno", "#linkedin uno", "uno senza tag"):  # a project without repos, a topic, no node
+            for sistema in ("darwin", "win32"):
+                with self.subTest(testo=testo, sistema=sistema):
+                    self._rifiuta("api", sistema, self.DUE, "## A\n- [ ] %s\n" % testo, testo)
+
+    def test_avvia_repo_doppio_non_accettato(self):
+        for sistema in ("darwin", "win32"):
+            with self.subTest(sistema=sistema):
+                # a twin in the project and no valid repo: on the task: refused before the name is even compared
+                self._rifiuta("api", sistema, {"alfa": ["api", "api", "web"]}, codice="cartella")
+                self._rifiuta("api", sistema, {"alfa": ["api", "api", "web"]}, "## A\n- [ ] #alfa uno repo:api\n", "#alfa uno repo:api", codice="cartella")
+                # only twins: nothing to tell apart and nothing to choose from, so no folder rather than one of them at random
+                self._rifiuta(None, sistema, {"alfa": ["api", "api"]}, codice="cartella")
+                self._rifiuta(None, sistema, {"alfa": ["api", "api"]}, "## A\n- [ ] #alfa uno repo:api\n", "#alfa uno repo:api", codice="cartella")
+
+    def test_avvia_repo_inesistente_non_ripiega_sul_vault(self):
+        for testo, stati, scelto in (("#alfa uno repo:web", self.DUE, None), ("#alfa uno", self.DUE, "web"), ("#alfa uno", {"alfa": ["web"]}, None)):
+            for sistema in ("darwin", "win32"):
+                with self.subTest(testo=testo, scelto=scelto, sistema=sistema):
+                    self._rifiuta(scelto, sistema, stati, "## A\n- [ ] %s\n" % testo, testo, codice="cartella", mancanti=("web",))
+
+    def test_avvia_repo_dentro_lavoro_rifiutato(self):
+        for collegato in (False, True):
+            with self.subTest(symlink=collegato):
+                v, av = self.prepara("## A\n- [ ] #alfa uno repo:api\n")
+                dentro = v / "projects" / "lavoro" / "api"
+                dentro.mkdir(parents=True)
+                percorso = dentro
+                if collegato:  # resolve(): a link to the work folder does not pass either
+                    (v / "link").mkdir()
+                    percorso = v / "link" / "api"
+                    os.symlink(dentro, percorso, target_is_directory=True)
+                (v / "projects" / "alfa" / "STATE.md").write_text("# alfa\n- **Repo:** %s\n" % percorso, encoding="utf-8")
+                prima = (v / "docs" / "piano.md").read_bytes()
+                for scelto in (None, "api"):
+                    with self.assertRaises(RuntimeError) as c:
+                        self.avvia(v, av, "#alfa uno repo:api", repo=scelto)
+                    self.assertEqual(str(c.exception), "cartella")
+                self.assertEqual((v / "docs" / "piano.md").read_bytes(), prima)
+                self.assertFalse(av.exists())
+                self.assertEqual(server.ULTIMI_AVVII, {})
+
+    def test_avvia_con_gemelli_serve_un_repo_valido_nel_task(self):
+        # one twin is enough: without a valid repo: on the task the one name left is not a choice, whatever the client sends
+        stati = {"alfa": ["api", "api", "web"]}
+        v, _ = self.prepara(repo=stati)
+        self.assertEqual(server.progetti_indice(v)["alfa"]["repo_doppi"], ["api"])
+        for testo in ("#alfa uno", "#alfa uno repo:api"):
+            for scelto in (None, "web"):
+                for sistema in ("darwin", "win32"):
+                    with self.subTest(testo=testo, scelto=scelto, sistema=sistema):
+                        self._rifiuta(scelto, sistema, stati, "## A\n- [ ] %s\n" % testo, testo, codice="cartella")
+        for scelto in (None, "web"):
+            with self.subTest(testo="repo:web", scelto=scelto):
+                v, av = self.prepara("## A\n- [ ] #alfa uno repo:web\n", repo=stati)
+                r, _ = self.avvia(v, av, "#alfa uno repo:web", repo=scelto)
+                self.assertEqual(r["cartella"], self.repo_di(v, "web", 2))
+
+    def test_avvia_rifiuta_la_radice_del_disco(self):
+        radice = Path(tempfile.gettempdir()).anchor
+        for riga in [radice + "."] + ([radice + "x\\.."] if os.name == "nt" else []):  # both resolve to the root
+            for sistema in ("darwin", "win32"):
+                with self.subTest(riga=riga, sistema=sistema):
+                    v, av = self.prepara()
+                    (v / "projects" / "alfa" / "STATE.md").write_text("# alfa\n- **Repo:** %s\n" % riga, encoding="utf-8")
+                    self.assert_rifiutato_nel_vault(v, av, "#alfa uno", "cartella", sistema)
+                    self.assertIsNone(server.cartella_nodo({"nome": "alfa", "tipo": "progetto"}, v))
+
+    def test_cartella_per_avvio_controlla_il_percorso_risolto_non_il_nome(self):
+        # a valid short name whose folder is the root (a link, say): the guard looks at where the path ends up
+        v, _ = self.prepara()
+        info = {"alfa": {"nome": "alfa", "cartelle": [Path(v.anchor)], "nomi_repo": ["radice"],
+                         "percorsi_repo": {"radice": v.anchor}, "repo_doppi": []}}
+        with mock.patch.object(server, "progetti_indice", return_value=info):
+            for scelto in (None, "radice"):
+                with self.subTest(scelto=scelto), self.assertRaises(RuntimeError) as c:
+                    server.cartella_per_avvio({"nome": "alfa", "tipo": "progetto"}, {"repo": []}, scelto, v)
+                self.assertEqual(str(c.exception), "cartella")
+
+    def test_avvia_rifiuta_le_cartelle_riservate_e_chi_le_contiene(self):
+        # ADR-002: notes in a reserved folder never reach a cloud model, so Claude never starts inside one or above one
+        riservata = "_" + "private"  # spezzato: la regola deny su Bash blocca ogni comando che contiene il nome
+        casi = {
+            "riservata": lambda v: v / "projects" / riservata / "api",
+            "riservata maiuscola": lambda v: v / "projects" / riservata.upper() / "api",
+            "configurata": lambda v: v / "projects" / "confidential-notes" / "api",
+            "projects": lambda v: v / "projects",
+            "sopra il vault": lambda v: v.parent,
+        }
+        for caso, repo in casi.items():
+            for sistema in ("darwin", "win32"):
+                with self.subTest(caso=caso, sistema=sistema):
+                    v, av = self.prepara()
+                    (v / "config.json").write_text(json.dumps({"moduli": {"riservata": {"attivo": True, "cartella": "projects/confidential-notes"}}}), encoding="utf-8")
+                    for cartella in (v / "projects" / riservata / "api", v / "projects" / "confidential-notes" / "api"):
+                        cartella.mkdir(parents=True, exist_ok=True)  # the folder exists: only the guard can refuse it
+                    if not repo(v).is_dir():  # a case-sensitive file system has no such folder: nothing to refuse
+                        continue
+                    (v / "projects" / "alfa" / "STATE.md").write_text("# alfa\n- **Repo:** %s\n" % repo(v), encoding="utf-8")
+                    self.assert_rifiutato_nel_vault(v, av, "#alfa uno", "cartella", sistema)
+                    self.assertIsNone(server.cartella_nodo({"nome": "alfa", "tipo": "progetto"}, v))
+
+    def test_avvia_rifiuta_un_link_verso_la_cartella_riservata(self):
+        v, av = self.prepara()
+        dentro = v / "projects" / ("_" + "private") / "api"
+        dentro.mkdir(parents=True)
+        (v / "link").mkdir()
+        try:
+            os.symlink(dentro, v / "link" / "api", target_is_directory=True)
+        except OSError:
+            self.skipTest("this system does not create symlinks")
+        (v / "projects" / "alfa" / "STATE.md").write_text("# alfa\n- **Repo:** %s\n" % (v / "link" / "api"), encoding="utf-8")
+        for sistema in ("darwin", "win32"):
+            with self.subTest(sistema=sistema):
+                self.assert_rifiutato_nel_vault(v, av, "#alfa uno", "cartella", sistema)
+        self.assertIsNone(server.cartella_nodo({"nome": "alfa", "tipo": "progetto"}, v))
+
+    def test_avvia_nella_radice_del_vault(self):
+        # the vault contains the reserved folders, but there its own deny rules apply: the one ancestor still allowed
+        v, av = self.prepara()
+        (v / "projects" / "alfa" / "STATE.md").write_text("# alfa\n- **Repo:** %s\n" % v, encoding="utf-8")
+        r, _ = self.avvia(v, av)
+        self.assertEqual(r["cartella"], str(v.resolve()))
+
+    def test_avvia_apre_la_cartella_risolta(self):
+        # the folder that was checked is the folder that opens: a Repo line with .. starts in its resolved form
+        v, av = self.prepara(repo=self.DUE)
+        (v / "projects" / "alfa" / "STATE.md").write_text(
+            "# alfa\n- **Repo:** %s\n" % (v / "repos" / "alfa" / "0" / ".." / "1" / "web"), encoding="utf-8")
+        atteso = self.repo_di(v, "web", 1)
+        r, chiamate = self.avvia(v, av)
+        self.assertEqual(r["cartella"], atteso)
+        self.assertIn("cd %s && " % server.shlex.quote(atteso), Path(chiamate[0][0][3]).read_text(encoding="utf-8"))
+        server.ULTIMI_AVVII.clear()
+        _, chiamate = self.avvia_windows(v, av)
+        self.assertEqual(chiamate[0][1]["cwd"], atteso)
 
 
 class AggiungiVoceTest(unittest.TestCase):
@@ -1040,6 +1302,17 @@ class RotteMappaTest(unittest.TestCase):
             self.v.joinpath("docs", "piano.md").write_text("## A\n- [ ] #alfa uno\n", encoding="utf-8")
             self.assertEqual(self.post_json("/api/mappa/avvia", {"data": None, "testo": "#alfa uno"}), (409, {"errore": "apertura"}))
 
+    def test_409_della_mappa_solo_codici_noti(self):
+        # an unexpected RuntimeError (a symlink loop, say) carries a disk path: the client only ever gets a code
+        for percorso, funzione, corpo in (("/api/mappa/avvia", "avvia_claude", {"data": None, "testo": "#alfa uno"}),
+                                          ("/api/mappa/stato", "imposta_stato", {"data": None, "testo": "#alfa uno", "stato": "fatto"}),
+                                          ("/api/mappa/nuovo", "aggiungi_voce", {"tag": "alfa", "testo": "due"})):
+            with self.subTest(percorso=percorso), mock.patch.object(server, funzione, side_effect=RuntimeError("Symlink loop from 'D:\\dati\\x'")):
+                self.assertEqual(self.post_json(percorso, corpo), (409, {"errore": "errore"}))
+        js = (Path(__file__).parent / "dashboard" / "mappa.js").read_text(encoding="utf-8")
+        for codice in server.CODICI_MAPPA | {"errore"}:  # every code that can reach the client has its message
+            self.assertRegex(js, r"\n    %s: '" % codice)
+
     def post(self, percorso, corpo, azione=True):
         c = http.client.HTTPConnection("127.0.0.1", self.porta, timeout=10)
         h = {"Content-Type": "application/json"}
@@ -1108,6 +1381,20 @@ class RotteMappaTest(unittest.TestCase):
             self.assertEqual(self.post("/api/mappa/avvia", {"data": None, "testo": 5}), 400)
             self.assertEqual(self.post("/api/mappa/avvia", {"data": None, "testo": "#alfa uno"}), 200)
             self.assertEqual(self.post("/api/mappa/avvia", {"data": None, "testo": "#alfa uno"}), 409)
+
+    def test_rotta_avvia_valida_il_campo_repo(self):
+        with mock.patch.object(server.sys, "platform", "darwin"), mock.patch.object(server.subprocess, "run", return_value=FinteEsito(0)) as run:
+            for repo in (123, "x" * 61, "", ["repo-alfa"], {"n": "repo-alfa"}, True):
+                with self.subTest(repo=repo):
+                    self.assertEqual(self.post("/api/mappa/avvia", {"data": None, "testo": "#alfa uno", "repo": repo}), 400)
+            self.assertEqual(self.post_json("/api/mappa/avvia", {"data": None, "testo": "#alfa uno", "repo": "..\\repo-alfa"}), (409, {"errore": "repo"}))
+            run.assert_not_called()
+            self.assertEqual(self.post("/api/mappa/avvia", {"data": None, "testo": "#alfa uno", "repo": "repo-alfa"}), 200)  # passed through
+            self.v.joinpath("docs", "piano.md").write_text("## A\n- [ ] #alfa due\n", encoding="utf-8")
+            self.assertEqual(self.post("/api/mappa/avvia", {"data": None, "testo": "#alfa due", "repo": None}), 200)
+        js = (Path(__file__).parent / "dashboard" / "mappa.js").read_text(encoding="utf-8")  # the two new 409 codes have their message
+        self.assertIn("repo: 'Quel repo non è tra quelli del progetto.',", js)
+        self.assertIn("scegli_repo: 'Scegli il repo in cui avviare.',", js)
 
     def test_harness_403_400_404_409_200(self):
         con_harness(self.v)

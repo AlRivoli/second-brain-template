@@ -23,6 +23,7 @@
   let aperto = null;        // UN solo nodo aperto: nome del nodo sotto il puntatore o col fuoco
   let fissato = null;       // nome del nodo fissato con un clic, oppure 'obiettivo:' + slug (a goal slug may equal a node name)
   let selezione = null;     // task scelto (clic su un satellite)
+  let filtroRepo = null;    // { nodo, repo }: the per-repo filter of the fixed node's panel, dropped when another node is fixed
   let nodiSvg = new Map();  // nome -> gruppo SVG
   let obiettiviSvg = new Map();   // slug -> { G, linee }: kept apart from nodiSvg so apri/filo never see a goal
   let pos = new Map();      // nome -> {x, y, r}
@@ -115,6 +116,19 @@
       return [h('details', 'gruppo-fatti', [h('summary', '', [h(titolo, 'gruppo', [nome + ' (' + g.length + ')'])]), ul], conScelto ? { open: '' } : {})];
     });
   }
+  // A task with no valid repo may touch any repo of its project, so a per-repo filter keeps it
+  const tocca = (t, repo) => !(t.repo || []).length || t.repo.includes(repo);
+  // What a row says about its repos, the same in the panel and in the list: a chip per valid repo, then the warnings in words.
+  // `filtrato`: under a repo filter a task with no `repo:` at all says so (one naming only unknown repos already says it).
+  function segniRepo(t, filtrato) {
+    const nomi = [...new Set(t.repo || [])], ignoti = t.repoIgnoti || [];
+    return [
+      nomi.length ? h('span', 'repo-elenco', ['repo', ...nomi.map(r => h('span', 'repo', [taglia(r, 24)]))]) : null,
+      ...ignoti.map(r => h('span', 'sub motivo', ['repo sconosciuto: ' + taglia(r, 24)])),
+      (t.stessoRepo || []).length ? h('span', 'stato attenzione avviso-repo', ['stesso repo di un task in corso']) : null,
+      filtrato && !nomi.length && !ignoti.length && !t.bozza ? h('span', 'sub', ['repo non indicato']) : null,
+    ];
+  }
 
   // ---- dati di prova (?prova=vuoto o ?prova=pieno): servono solo a verificare l'aspetto ----
   function prova(tipo) {
@@ -127,12 +141,27 @@
     const blocco = { ci: { id: 'pr-ci', vista: nomi[1], nodo: 'Prova piena', chi: null }, li: { id: 'bozze-li', vista: 'Pubblicare 6 bozze', nodo: 'linkedin', chi: null }, te: { id: 'dominio', vista: nomi[7], nodo: 'Prova piena', chi: 'te' } };
     const extra = { 1: { id: 'pr-ci' }, 2: { derivato: 'in_attesa', aspetta: [blocco.ci] }, 4: { derivato: 'incoerente', aspetta: [blocco.ci] }, 5: { derivato: 'in_attesa', aspetta: [blocco.li] },
       6: { derivato: 'errore', errore: 'riferimento', mancanti: ['cron-vecchio'] }, 7: { id: 'dominio', chi: 'te' }, 8: { derivato: 'in_attesa', aspetta: [blocco.te] }, 9: { derivato: 'errore', errore: 'ciclo' } };
-    // goals: «club» spans two nodes and every state, «linkedin» is defined with no task (and shares a node's name), «radar» is undefined
+    // goals: «club» spans three nodes and every state, «linkedin» is defined with no task (and shares a node's name), «radar» is undefined
     const obiettivoDi = { 0: 'club', 5: 'club', 13: 'club', 2: 'radar' };
     const task = nomi.map((testo, i) => ({ data: '2026-11-' + String(10 + i).padStart(2, '0'), testo, vista: testo, stato: stati[i], ritardo: i === 3,
       id: null, chi: null, derivato: stati[i] === 'da_fare' ? 'pronto' : stati[i], errore: null, mancanti: [], aspetta: [], obiettivo: obiettivoDi[i] || null, ...extra[i] }));
     const nodi = [{ nome: 'Prova piena', tipo: 'progetto', priorita: 'alta', haCartella: true, task },
       { nome: 'linkedin', tipo: 'argomento', priorita: null, haCartella: true, task: [{ data: '2026-11-12', testo: 'Pubblicare 6 bozze', vista: 'Pubblicare 6 bozze', stato: 'da_fare', ritardo: false, id: 'bozze-li', chi: null, derivato: 'pronto', errore: null, mancanti: [], aspetta: [], obiettivo: 'club' }] }];
+    // repos, as the server sends them: valid names (duplicates kept), unknown ones apart, the same-repo warning only on ready tasks
+    const conRepo = (i, testo, stato, campi) => ({ data: '2026-11-' + String(10 + i).padStart(2, '0'), testo, vista: testo, stato, ritardo: false, id: null, chi: null,
+      derivato: stato === 'da_fare' ? 'pronto' : stato, errore: null, mancanti: [], aspetta: [], obiettivo: null, repo: [], repoIgnoti: [], stessoRepo: [], ...campi });
+    nodi.push({ nome: 'Prova repo', tipo: 'progetto', priorita: 'media', haCartella: true, repo: ['api', 'web', 'app-mobile'], task: [
+      conRepo(1, 'Migrare le API di accesso', 'in_corso', { repo: ['api'] }),
+      conRepo(2, 'Limitare i tentativi di accesso', 'da_fare', { repo: ['api'], stessoRepo: ['api'] }),
+      conRepo(3, 'Nuova pagina del profilo', 'da_fare', { repo: ['web'] }),
+      conRepo(4, 'Allineare API e pagina del profilo', 'da_fare', { repo: ['api', 'web', 'web'], stessoRepo: ['api'], obiettivo: 'club' }),
+      conRepo(5, 'Notifiche sul telefono', 'da_fare', { repoIgnoti: ['mobile'] }),
+      conRepo(6, 'Rivedere la guida del progetto', 'da_fare'),
+      conRepo(7, 'Icona della app', 'fatto', { repo: ['app-mobile'] }),
+    ] }, { nome: 'Prova un repo', tipo: 'progetto', priorita: 'bassa', haCartella: true, repo: ['sito'], task: [
+      conRepo(8, 'Rifare la home del sito', 'in_corso'),
+      conRepo(9, 'Aggiornare i testi del sito', 'da_fare', { stessoRepo: ['sito'] }),
+    ] });
     // the same shape the server builds: task copies with their node, counts by visual state
     const obiettivo = (slug, titolo, definito) => {
       const ts = nodi.flatMap(n => n.task.filter(t => t.obiettivo === slug).map(t => ({ ...t, nodo: n.nome })));
@@ -188,7 +217,7 @@
           if (d < min) { const f = (min - d) / d * 0.25; a.x += dx * f; a.y += dy * f; }
         }
         a.x = Math.max(a.r + 40, Math.min(W - a.r - 40, a.x));
-        a.y = Math.max(a.r + 70 + alto, Math.min(H - a.r - 56, a.y));
+        a.y = Math.max(a.r + 70 + alto, Math.min(H - a.r - ((a.n.repo || []).length > 1 ? 72 : 56), a.y));   // the repo line needs room too
       }
     }
     return N;
@@ -316,7 +345,8 @@
       const { n, x, y, r } = o;
       pos.set(n.nome, { x, y, r });
       const daDecidere = !!(n.harness && n.harness.stato === 'da decidere');   // contorno tratteggiato: manca la decisione sull'harness
-      const nota = n.harness && n.harness.stato !== 'senza repo' ? ', harness ' + n.harness.stato : '';
+      const repo = n.repo || [];
+      const nota = (n.harness && n.harness.stato !== 'senza repo' ? ', harness ' + n.harness.stato : '') + (repo.length > 1 ? ', repo: ' + repo.join(', ') : '');
       const G = s('g', { class: 'nodo' + (n.nome === prossimo ? ' prossimo' : '') + (daDecidere ? ' harness-da-decidere' : ''), tabindex: 0, role: 'button', 'aria-label': n.nome + ', ' + contoAperti(n) + nota });
       G.append(s('title', {}, [n.nome + ': ' + contoAperti(n) + nota]), s('circle', { class: 'alone', cx: x, cy: y, r: r + 9 }), s('circle', { class: 'disco', cx: x, cy: y, r }));
       const tot = n.task.length;
@@ -335,6 +365,8 @@
       G.append(s('text', { class: 'num', x, y, dy: '0.35em' }, [String(pronti(n))]),
         s('text', { class: 'nome', x, y: y + r, dy: '1.55em' }, [taglia(n.nome, 22)]),
         s('text', { class: 'tipo', x, y: y + r, dy: '3.2em' }, [n.tipo === 'senza' ? 'da etichettare' : n.tipo]));
+      // a node with more than one repo names them: three at most, the rest as «+k» (all of them are in the tooltip)
+      if (repo.length > 1) G.append(s('text', { class: 'repo-nodo', x, y: y + r, dy: '4.8em' }, [repo.slice(0, 3).map(nomeRepo => taglia(nomeRepo, 14)).join(' · ') + (repo.length > 3 ? ' +' + (repo.length - 3) : '')]));
       if (haPiu(n)) G.append(piu(n, pos.get(n.nome)));
       G.addEventListener('pointerenter', () => apri(n.nome));
       G.addEventListener('focus', () => { if (G.matches(':focus-visible')) portaInVista(n.nome); apri(n.nome); });   // solo dalla tastiera: al clic il nodo si sposterebbe sotto il puntatore
@@ -501,10 +533,11 @@
     if (aperto) nodiSvg.get(aperto).classList.add('aperto');
     disegnaSatelliti(aperto);
   }
-  function scegli(nome) { fissato = nome; selezione = null; apri(nome); pannello(); }
+  function scegli(nome) { if (fissato !== nome) filtroRepo = null; fissato = nome; selezione = null; apri(nome); pannello(); }
   function scegliObiettivo(slug) { fissato = PREFISSO_OBIETTIVO + slug; selezione = null; apri(null); pannello(); }
   // fissa il nodo, seleziona il task e porta il pannello su di lui: la lista dei task può essere più lunga del pannello
   function scegliTask(nome, t) {
+    if (fissato !== nome || (filtroRepo && !tocca(t, filtroRepo.repo))) filtroRepo = null;   // a task the filter hides could not be scrolled to
     fissato = nome; selezione = t; apri(nome); pannello();
     const d = $('mappa-dettaglio'), el = d.querySelector('.task.scelto');
     if (el) d.scrollTop += el.getBoundingClientRect().top - d.getBoundingClientRect().top - (d.clientHeight - el.offsetHeight) / 2;
@@ -518,6 +551,7 @@
       h('i', 'punto st-' + statoVisivo(t)), bottone(t.vista, 'link' + (t.ritardo ? ' ritardo' : ''), () => { scegliTask(n.nome, t); $('mappa-dettaglio').scrollIntoView({ block: 'nearest' }); }),
       h('span', 'sub', [NOME_VISIVO[statoVisivo(t)] + (t.data ? ' · ' + giornoBreve(t.data) : '') + (conNodo ? ' · ' + n.nome : '')]),
       ...motivi(t, n).map(m => h('span', 'sub motivo', [m])),
+      ...segniRepo(t),
     ]);
   }
   function lista() {
@@ -544,7 +578,7 @@
     }));
   }
   const apriPost = () => { const b = document.querySelector('.schede button[data-vista="post"]'); if (b) b.click(); };   // le bozze si decidono in Post, non da qui
-  // `conNodo`: in a goal panel the row names its node; `n` is always the task's own node, so «Avvia» opens that project's folder
+  // `conNodo`: in a goal panel the row names its node; `n` is always the task's own node, so «Avvia» picks among that project's repos
   function rigaTask(n, t, conNodo) {
     const sel = selezione && selezione.testo === t.testo && selezione.data === t.data;
     const vis = statoVisivo(t), tuo = t.chi === 'te' && (t.derivato === 'pronto' || t.derivato === 'in_corso');
@@ -552,14 +586,31 @@
       h('span', 'task-testo' + (t.ritardo ? ' ritardo' : ''), [h('i', 'punto st-' + vis), t.vista, t.data ? h('span', 'sub', [' ' + (t.ritardo ? 'dal ' : '') + giornoBreve(t.data)]) : null]),
       conNodo ? h('span', 'sub', [n.nome]) : null,
       ...motivi(t, n).map(m => h('span', 'sub motivo', [m])),
+      ...segniRepo(t, !conNodo && !!repoFiltrato(n)),
       h('span', 'riga-azioni', t.bozza ? [bottone('Apri in Post', '', apriPost)] : [selettore(n, t),
         n.haCartella && avviabile(t) ? bottone(t.derivato === 'in_corso' ? 'Riavvia' : 'Avvia', '', () => conferma(n, t)) : tuo ? h('span', 'sub tocca-a-te', ['Tocca a te']) : null]),
     ]);
     if (sel) li.setAttribute('aria-current', 'true');
     return li;
   }
+  // The repo the fixed node's panel is filtered on, or null: a filter of another node, or on a repo that is gone, does not apply
+  const repoFiltrato = n => filtroRepo && filtroRepo.nodo === n.nome && (n.repo || []).includes(filtroRepo.repo) ? filtroRepo.repo : null;
+  // «tutti / <repo>…» above the tasks of a node with more than one repo; the redraw keeps the focus on the pressed button
+  function filtroPerRepo(n, attivo) {
+    return h('div', 'scelta minore filtro-repo', [null, ...n.repo].map(r => {
+      const b = bottone(r === null ? 'tutti' : taglia(r, 24), '', () => {
+        filtroRepo = r === null ? null : { nodo: n.nome, repo: r };
+        pannello();
+        const su = document.querySelector('#mappa-dettaglio .filtro-repo [aria-pressed="true"]');
+        if (su) su.focus();
+      });
+      b.setAttribute('aria-pressed', String(r === attivo));
+      return b;
+    }), { role: 'group', 'aria-label': 'Filtro per repo' });
+  }
   function dettaglioNodo(n) {
     const p = n.tipo === 'progetto' ? progetti.find(x => x.nome.toLowerCase() === n.nome.toLowerCase()) : null;
+    const repo = repoFiltrato(n), mostrati = repo ? n.task.filter(t => tocca(t, repo)) : n.task;
     const c = p && p.attivita && p.attivita.commit && p.attivita.commit[0];
     const avviabili = n.task.filter(avviabile), da = avviabili.find(t => t.derivato === 'in_corso') || avviabili.find(t => t.derivato === 'pronto');   // «Avvia» parte dal passo già in corso, poi dal primo pronto non tuo
     const fermo = !da && n.task.find(t => t.derivato === 'in_attesa' && t.aspetta.length);   // nothing to launch: say what the node waits for
@@ -570,7 +621,9 @@
       n.tipo === 'progetto' && n.haCartella && n.harness ? bloccoHarness(n) : null,   // solo se il modulo dell'harness è acceso: senza, il server non manda il campo
       p && p.doveSono ? h('p', 'dove-sono', [h('b', '', ['Dove sono ']), taglia(p.doveSono, 260)]) : null,
       c ? h('p', 'sub', ['Ultimo commit: ' + taglia(c.messaggio, 80) + (c.ramo ? ' (' + c.ramo + ')' : '')]) : null,
-      ...(n.task.length ? gruppi(n.task, t => rigaTask(n, t), 'h3') : [h('p', 'vuoto', [n.nome === 'Social' ? 'Nessuna bozza da pubblicare.' : 'Nessun task nel piano con questo tag.'])]),
+      n.task.length && (n.repo || []).length > 1 ? filtroPerRepo(n, repo) : null,
+      ...(n.task.length ? gruppi(mostrati, t => rigaTask(n, t), 'h3') : [h('p', 'vuoto', [n.nome === 'Social' ? 'Nessuna bozza da pubblicare.' : 'Nessun task nel piano con questo tag.'])]),
+      n.task.length && !mostrati.length ? h('p', 'vuoto', ['Nessun task per ' + repo + '.']) : null,
       fermo ? h('p', 'sub', ['Niente da avviare: aspetta ' + bloccante(fermo.aspetta[0], n) + '.']) : null,
       h('div', 'riga-azioni', [
         da && n.haCartella ? bottone(da.stato === 'in_corso' ? 'Riavvia in Claude' : 'Avvia in Claude', 'primario', () => conferma(n, da)) : null,
@@ -685,6 +738,8 @@
   const ERRORI_409 = {
     doppia: 'Due voci uguali in piano.md: correggi in Obsidian.',
     cartella: 'Cartella non valida per questo task.',
+    repo: 'Quel repo non è tra quelli del progetto.',
+    scegli_repo: 'Scegli il repo in cui avviare.',
     ripetuto: 'Già avviato: guarda il Terminale.',
     in_attesa: 'Questo task aspetta altri task: si avvia quando sono fatti.',
     tuo: 'Questo task tocca a te: Claude non lo avvia.',
@@ -831,13 +886,28 @@
     d.showModal();
     nome.focus();
   }
-  function conferma(n, t) {
+  // Where «Avvia» opens, mirroring the server: the task's distinct valid repos, else every repo of its project. One is used
+  // as it is, more ask for a choice, none keeps the node's folder. The dialog shows repo names only, never a path.
+  // `ripresa`: the server asked for a choice this data did not foresee (the plan changed): with fewer than two, offer the project's repos.
+  function conferma(n, t, ripresa) {
     if (inProva()) return toast('Modalità prova: nessuna modifica.');
+    t = n.task.find(x => x.data === t.data && x.testo === t.testo) || t;   // the Agenda passes a bare task: the node's own has the repos
+    const validi = [...new Set(t.repo || [])];
+    let candidati = validi.length ? validi : n.repo || [];
+    if (ripresa && candidati.length < 2) candidati = n.repo || [];
     const d = dialogo('mappa-avvia', 'Avvia in Claude');
+    const radio = candidati.length > 1 ? candidati.map(r => h('input', '', [], { type: 'radio', name: 'repo', value: r })) : [];
     const avvia = bottone('Avvia', 'primario', async () => {
+      const repo = radio.length ? (radio.find(x => x.checked) || {}).value : candidati[0];
+      if (radio.length && !repo) return;
       avvia.disabled = true;
       try {
-        const r = await invia('/api/mappa/avvia', { data: t.data, testo: t.testo });
+        const r = await invia('/api/mappa/avvia', { data: t.data, testo: t.testo, repo: repo || null });
+        if (r.stato === 409 && r.json && r.json.errore === 'scegli_repo' && !ripresa) {   // ask on fresh data instead of a dead toast
+          d.close(); toast(ERRORI_409.scegli_repo);
+          await carica();
+          return conferma(nodoPer(n.nome) || n, t, true);
+        }
         d.close();
         if (!r.ok) return errore(r);
         toast(r.json && r.json.avviso ? 'Terminale aperto, ma non ho potuto segnare «in corso».' : 'Claude avviato nel Terminale.');
@@ -845,12 +915,15 @@
       } catch (e) { d.close(); toast('Non è andata: ' + e.message); }
     });
     const annulla = bottone('Annulla', '', () => d.close());
+    avvia.disabled = radio.length > 0;   // nothing is picked for you
+    radio.forEach(x => x.addEventListener('change', () => { avvia.disabled = false; }));
     d.replaceChildren(h('form', '', [
       h('h2', '', ['Avvia in Claude']),
       h('p', 'sub', ['Si apre il Terminale con una sessione di Claude.']),
       h('p', 'sub', ['Nodo: ' + n.nome]),
-      n.cartella ? h('p', 'sub', ['Cartella: ' + n.cartella]) : null,
+      candidati.length === 1 ? h('p', 'sub', ['Repo: ' + candidati[0]]) : !candidati.length && n.cartella ? h('p', 'sub', ['Cartella: ' + n.cartella]) : null,
       h('p', 'titolo-dialogo', [t.vista]),
+      radio.length ? h('fieldset', 'scelta-repo', [h('legend', '', ['Repo in cui avviare']), ...radio.map(x => h('label', '', [x, x.value]))]) : null,
       h('div', 'riga-azioni', [avvia, annulla]),
     ], { method: 'dialog' }));
     d.showModal();

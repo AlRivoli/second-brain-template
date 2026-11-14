@@ -125,6 +125,49 @@ class VerifyTest(unittest.TestCase):
             self.assertIn('docs/obiettivi.md:1: avviso:', out)
             self.assertIn('OK', out)
 
+    def test_repo_doppi_fanno_fallire_verify(self):
+        stato = GOOD_STATE.replace('- **Repo:** nessuno', '- **Repo:** C:\\a\\api\n- **Repo:** D:\\b\\api')
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), state=stato)
+            code, out = run_verify(tmp)
+            self.assertEqual(code, 1, out)
+            self.assertIn('projects/progetto-a/STATE.md: due Repo con lo stesso nome api', out)
+
+    def test_repo_doppi_in_una_cartella_riservata_non_si_leggono(self):
+        stato = GOOD_STATE.replace('- **Repo:** nessuno', '- **Repo:** C:\\a\\api\n- **Repo:** D:\\b\\api')
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), extra={'projects/' 'lavoro/STATE.md': stato})
+            code, out = run_verify(tmp)
+            self.assertEqual((code, out.strip()), (0, 'OK'))
+
+    def test_repo_che_non_si_scrive_come_marcatore_e_un_avviso(self):
+        # the dashboard offers it as a choice but a `repo:` marker (and the route) cannot name it: warn, do not block
+        lungo = 'r' * 61
+        stato = GOOD_STATE.replace('- **Repo:** nessuno', '- **Repo:** C:\\a\\mio repo\n- **Repo:** C:\\a\\%s\n- **Repo:** C:\\a\\api' % lungo)
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), state=stato)
+            code, out = run_verify(tmp)
+            self.assertEqual(code, 0, out)
+            for nome in ('mio repo', lungo):
+                self.assertIn('projects/progetto-a/STATE.md: avviso: repo:%s non si può scrivere come marcatore: rinomina la cartella' % nome, out)
+            self.assertNotIn('repo:api', out)
+            self.assertIn('OK', out)
+
+    def test_repo_ignoto_e_un_avviso(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), extra={'docs/piano.md': '## A\n- [ ] #progetto-a x repo:zz\n'})
+            code, out = run_verify(tmp)
+            self.assertEqual(code, 0, out)
+            self.assertIn('docs/piano.md:2: avviso: repo:zz', out)
+            self.assertIn('OK', out)
+
+    def test_repo_del_progetto_non_da_avvisi(self):
+        stato = GOOD_STATE.replace('- **Repo:** nessuno', '- **Repo:** C:\\a\\api\n- **Repo:** C:\\a\\web')
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), state=stato, extra={'docs/piano.md': '## A\n- [ ] #Progetto-A x repo:web,api\n'})
+            code, out = run_verify(tmp)
+            self.assertEqual((code, out.strip()), (0, 'OK'))
+
     def test_readme_che_non_cita_un_job_o_un_comando(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

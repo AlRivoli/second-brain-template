@@ -25,6 +25,8 @@ _ULTIMO_TOKEN = re.compile(r"\s(\S+)$")
 # A marker-like token left in the text after the trailing markers were split off
 _QUASI_MARCATORE = re.compile(r"\b(?:%s):\S*" % "|".join(CHIAVI))
 _CASELLA = {" ": "da_fare", "~": "in_corso", "x": "fatto", "X": "fatto"}
+# Same rule as the dashboard server: the first `#tag` of the text names the project
+_TAG = re.compile(r"(?:^|\s)#([A-Za-z][\w-]*)")
 
 
 def _valore(chiave, grezzo):
@@ -154,13 +156,38 @@ def stati_derivati(voci):
 
 
 def leggi_voci(testo):
-    """Checkbox lines of a plan file: {riga (1-based), stato, testo (markers removed), marcatori}."""
+    """Checkbox lines of a plan file: {riga (1-based), stato, testo (markers removed), tag (lowercase or None), marcatori}."""
     voci = []
     for numero, riga in enumerate(testo.splitlines(), 1):
         if m := VOCE_PIANO.match(riga):
             senza, marcatori = separa_marcatori(m.group(2))
-            voci.append({"riga": numero, "stato": _CASELLA[m.group(1)], "testo": senza, "marcatori": marcatori})
+            tag = _TAG.search(senza)
+            voci.append({"riga": numero, "stato": _CASELLA[m.group(1)], "testo": senza,
+                         "tag": tag.group(1).lower() if tag else None, "marcatori": marcatori})
     return voci
+
+
+def nomi_repo(percorsi):
+    """Short names of a project's `Repo` lines: ({name: path} in order, [names used by more than one path]).
+
+    The short name is the last folder of the path, with a slash or a backslash separator, on every OS. `nessuno`, blank lines,
+    roots and paths ending in `.` or `..` are not repos, and the same path repeated counts once. A duplicate name is left out of the dict: it cannot be told apart, so it is
+    never allowed. O(n) time and space.
+    """
+    per_nome, doppi = {}, []
+    for p in dict.fromkeys(p.strip() for p in percorsi):
+        if not p or p == "nessuno":
+            continue
+        nome = re.split(r"[\\/]", p.rstrip("\\/"))[-1]  # not Path().name: that keeps a whole Windows path on POSIX
+        # A root (`/`, `C:\`, `C:`) or a path ending in `.` or `..` names no folder of its own: it is never a candidate
+        if not nome or nome in (".", "..") or nome.endswith(":") or nome in doppi:
+            continue
+        if nome in per_nome:
+            del per_nome[nome]
+            doppi.append(nome)
+        else:
+            per_nome[nome] = p
+    return per_nome, doppi
 
 
 def leggi_obiettivi(testo):
@@ -193,11 +220,14 @@ def leggi_obiettivi(testo):
     return obiettivi, trovati
 
 
-def problemi(voci, obiettivi=None):
+def problemi(voci, obiettivi=None, repo=None):
     """(riga, message saying what to fix) for duplicate ids, `dopo` pointing nowhere, cycles, and marker-like leftovers.
 
     With `obiettivi` (the slugs defined in docs/obiettivi.md, possibly empty) it also flags `obiettivo:` markers
     that name an undefined slug; `None` skips that check.
+
+    With `repo` ({project tag: set of repo short names}, possibly empty) it flags `repo:` markers on a task whose
+    tag is not a project, and names that are not a repo of the task's project; `None` skips that check.
 
     A malformed trailing token stops the marker scan, so the markers before it stay plain text: the task silently
     loses its `dopo:` or `chi:te` and reads as ready. That is fail-open, so it is reported.
@@ -219,4 +249,16 @@ def problemi(voci, obiettivi=None):
         slug = v["marcatori"].get("obiettivo")
         if obiettivi is not None and slug is not None and slug not in obiettivi:
             trovati.append((v["riga"], f"obiettivo:{slug} non è definito in docs/obiettivi.md: aggiungi `- {slug}: <titolo>`"))
+        nomi = m.get("repo")
+        if repo is None or not nomi:
+            continue
+        tag = v.get("tag")
+        if tag not in repo:
+            trovati.append((v["riga"], f"repo:{','.join(nomi)} su un task senza progetto: aggiungi il #tag del progetto o togli repo:"))
+            continue
+        for nome in dict.fromkeys(nomi):
+            if nome not in repo[tag]:
+                elenco = ", ".join(sorted(repo[tag])) or "nessuno, il progetto non ha repo"
+                trovati.append((v["riga"], f"repo:{nome} non è un repo di {tag}: usa uno di {elenco} "
+                                           "(nome della cartella nella riga Repo dello STATE)"))
     return trovati

@@ -115,6 +115,11 @@ class HtmlDashboard(unittest.TestCase):
         self.assertIn("rigaTask(nodoPer(t.nodo), t, true)", js)
         self.assertIn("() => conferma(n, t))", js[js.index("function rigaTask"):js.index("function dettaglioNodo")])
 
+    def test_la_mappa_mostra_i_repo(self):
+        js = (D / "mappa.js").read_text(encoding="utf-8")
+        for atteso in ("stesso repo di un task in corso", "repo sconosciuto", "repo non indicato", "scegli_repo", "name: 'repo'", "Repo: "):
+            self.assertIn(atteso, js)
+
     def test_in_ritardo_e_bloccato_resta_rosso(self):
         # a late task that waits is never the next action: the spec wants it flagged, and the grey of «in attesa» must not hide the red
         js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")

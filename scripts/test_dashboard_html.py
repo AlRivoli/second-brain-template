@@ -87,11 +87,24 @@ class HtmlDashboard(unittest.TestCase):
     def test_i_numeri_dei_nodi_si_spiegano_e_le_bozze_sono_in_sola_lettura(self):
         js = (D / "mappa.js").read_text(encoding="utf-8")
         css = (D / "dashboard.css").read_text(encoding="utf-8")
-        for pezzo in ("task aperti", "nessun task nel piano con questo tag", "Il numero sul nodo = task aperti nel piano",
+        for pezzo in ("pronti", "nessun task nel piano con questo tag", "Il numero sul nodo = task pronti da avviare",
                       "bozze da pubblicare", "nessuna bozza da pubblicare", "Apri in Post", "t.bozza",
                       "n.nome === 'Social' || !t.bozza"):   # sui nodi dei progetti le bozze sono satelliti, non entrano nel numero
             self.assertIn(pezzo, js)
         self.assertIn("nota-mappa", css)                                # la legenda del numero resta visibile anche sotto i 760px
+
+    def test_la_mappa_disegna_quattro_stati_e_il_filo(self):
+        js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")
+        for atteso in ("st-pronto", "st-in_attesa", "mappa-dipendenze", "statoVisivo", "Pronti da avviare", "In attesa"):
+            self.assertIn(atteso, js)
+        self.assertRegex(css, r"\.arco\.st-in_attesa[^}]*stroke-dasharray")  # in attesa si legge dal tratteggio, non solo dal colore (il tratteggio dell'harness esiste già e non conta)
+
+    def test_in_ritardo_e_bloccato_resta_rosso(self):
+        # a late task that waits is never the next action: the spec wants it flagged, and the grey of «in attesa» must not hide the red
+        js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")
+        self.assertIn("in ritardo e bloccato", js[js.index("function motivi"):js.index("function gruppi")])
+        self.assertRegex(css, r"\.sat\.st-in_attesa\.ritardo text \{ fill: var\(--late\)")
+        self.assertRegex(css, r"\.task\.st-in_attesa \.task-testo\.ritardo \{ color: var\(--late\)")
 
     def test_la_mappa_conosce_i_codici_409_e_la_tastiera_dei_satelliti(self):
         js = (D / "mappa.js").read_text(encoding="utf-8")
@@ -204,6 +217,8 @@ class HtmlDashboard(unittest.TestCase):
         riga = js[js.index("function rigaAgenda"):js.index("const elencoAgenda")]
         self.assertIn("nodoDi(tag)", riga)
         self.assertIn("haCartella", riga)
+        self.assertIn("piano && tag && window.Mappa", riga)   # scadenze show their tag but are not in piano.md: no «Avvia»
+        self.assertIn("v.fonte === 'scadenze' ? Comp.senzaTag(v.testo).tag", riga)   # the tag comes from the raw testo, vista has none
         mappa = (D / "mappa.js").read_text(encoding="utf-8")
         voce = mappa[mappa.index("async function avviaVoce"):mappa.index("window.Mappa =")]
         self.assertNotIn("cartella: null", voce)

@@ -31,6 +31,12 @@ class AgendaTest(unittest.TestCase):
         self.assertTrue(v[1]["lavoro"])
         self.assertEqual(v[2]["fonte"], "piano")             # le voci del piano mantengono i loro campi
 
+    def test_unisci_titolo_dalla_vista(self):
+        scadenze = [{"fonte": "piano", "testo": "#alfa paga id:p1", "vista": "paga", "data": "2026-11-02"},
+                    {"fonte": "piano", "testo": "senza vista", "data": "2026-11-03"}]
+        v = agenda.unisci([], scadenze, ADESSO, 7)
+        self.assertEqual([(x["titolo"], x["testo"]) for x in v], [("paga", "#alfa paga id:p1"), ("senza vista", "senza vista")])
+
     def test_i_post_scaduti_da_piu_di_due_giorni_sono_arretrati_e_vanno_in_fondo_al_ritardo(self):
         # dieci post rossi in cima a «Cosa mi aspetta» saturano l'allarme: il rosso resta per ciò che chiede una decisione oggi
         scadenze = [{"fonte": "post", "testo": "Post: vecchio", "data": "2026-10-20"},

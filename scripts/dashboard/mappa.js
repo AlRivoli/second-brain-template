@@ -5,6 +5,15 @@
   const STATI = ['da_fare', 'in_corso', 'fatto'];
   const NOME_STATO = { da_fare: 'da fare', in_corso: 'in corso', fatto: 'fatto' };
   const FILTRI = [['tutto', 'Tutto'], ['aperti', 'Aperti'], ['progetti', 'Progetti'], ['argomenti', 'Argomenti']];
+  // What the map shows: four states derived from the dependency graph. The selector above still writes the raw three.
+  const VISIVI = ['fatto', 'in_corso', 'pronto', 'in_attesa'];   // ring order
+  const NOME_VISIVO = { pronto: 'pronto', in_corso: 'in corso', in_attesa: 'in attesa', fatto: 'fatto' };
+  const GRUPPI = [['pronto', 'Pronti da avviare'], ['in_corso', 'In corso'], ['in_attesa', 'In attesa'], ['fatto', 'Fatti']];
+  const DA_DERIVATO = { pronto: 'pronto', in_corso: 'in_corso', incoerente: 'in_corso', in_attesa: 'in_attesa', errore: 'in_attesa', fatto: 'fatto' };
+  // A task without `derivato` (e.g. the one built by avviaVoce) falls back to its raw state, «da fare» reading as ready.
+  const statoVisivo = t => DA_DERIVATO[t.derivato] || (t.stato === 'da_fare' ? 'pronto' : t.stato);
+  // The server refuses to launch anything else (409): incoerente reads as «in corso» but is not launchable.
+  const avviabile = t => !t.bozza && t.chi !== 'te' && (t.derivato === 'pronto' || t.derivato === 'in_corso');
 
   let dati = null;          // l'ultima risposta di /api/mappa
   let progetti = [];        // /api/stato, per «Dove sono» e l'ultimo commit
@@ -40,17 +49,20 @@
   }
   const K_MIN = 0.6, K_MAX = 3;       // oltre questi limiti le etichette si toccano o i nodi escono dal riquadro
   // Le bozze con «Progetto:» stanno anche sul nodo del progetto come satelliti, ma il suo numero resta quello del piano.
+  const delNodo = n => n.task.filter(t => n.nome === 'Social' || !t.bozza);
   const aperti = n => n.task.filter(t => t.stato !== 'fatto' && (n.nome === 'Social' || !t.bozza)).length;
+  const pronti = n => delNodo(n).filter(t => statoVisivo(t) === 'pronto').length;
   const puoAggiungere = n => n.haCartella && n.tipo !== 'senza' && /^[A-Za-z][\p{L}\p{N}_-]*$/u.test(n.nome);   // il nome del nodo è il tag: deve essere un tag valido
   // Cosa dice il numero sul nodo, a parole: lo stesso testo va nel tooltip, nell'etichetta per i lettori di schermo, nel pannello e nella lista.
-  // Social conta bozze (content/), gli altri nodi task di piano.md.
+  // Social conta bozze (content/), gli altri nodi task di piano.md: pronti sempre (è il numero), in corso e in attesa se ci sono.
   function contoAperti(n) {
     const k = aperti(n);
     if (n.nome === 'Social') return k ? k + (k === 1 ? ' bozza da pubblicare' : ' bozze da pubblicare') : 'nessuna bozza da pubblicare';
     const b = n.task.filter(t => t.bozza && t.stato !== 'fatto').length, nelPiano = n.task.length - n.task.filter(t => t.bozza).length;
     const bozze = b ? ' · ' + b + (b === 1 ? ' bozza da pubblicare' : ' bozze da pubblicare') : '';
-    if (k) return k + (k === 1 ? ' task aperto' : ' task aperti') + bozze;
-    return (nelPiano ? 'nessun task aperto' : 'nessun task nel piano con questo tag') + bozze;
+    if (!k) return (nelPiano ? 'nessun task aperto' : 'nessun task nel piano con questo tag') + bozze;
+    const quanti = st => delNodo(n).filter(t => statoVisivo(t) === st).length, p = pronti(n), c = quanti('in_corso'), a = quanti('in_attesa');
+    return [p + (p === 1 ? ' pronto' : ' pronti'), c ? c + ' in corso' : '', a ? a + ' in attesa' : ''].filter(Boolean).join(' · ') + bozze;
   }
   const haPiu = n => aperti(n) === 0 && puoAggiungere(n);   // nodo senza task da fare: un «+» per scriverne uno
   // Il «+» sta due volte: sul nodo, e sopra la zona dei satelliti quando il nodo è aperto (la zona copre il bordo del disco).
@@ -70,19 +82,46 @@
   function giornoBreve(iso) {
     return new Date(iso + 'T12:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'short' }).replace('.', '');
   }
+  // What a task waits for, in words: one line per blocker (or the error), the same in the panel and in the list.
+  const bloccante = (a, n) => a.chi === 'te' ? 'te — ' + a.vista : a.vista + (a.nodo !== n.nome ? ' · ' + a.nodo : '');
+  // A late task that is blocked is never the next action, so the late signal travels with the reason instead.
+  function motivi(t, n) {
+    const tardi = t.ritardo && (t.derivato === 'in_attesa' || t.derivato === 'errore') ? ['in ritardo e bloccato'] : [];
+    if (t.derivato === 'errore') {
+      return [...tardi, t.errore === 'riferimento' ? 'riferimento rotto: ' + t.mancanti.join(', ') : t.errore === 'ciclo' ? 'ciclo di dipendenze' : 'id doppio: ' + t.id];
+    }
+    if (t.derivato !== 'in_attesa' && t.derivato !== 'incoerente') return [];
+    return [...tardi, ...t.aspetta.map(a => (t.derivato === 'incoerente' ? 'aspetta ancora: ' : 'aspetta: ') + bloccante(a, n))];
+  }
+  // Tasks split by visual state, in panel order; «Fatti» folded (open only if it holds the selected task, so the scroll finds it).
+  function gruppi(ts, riga, titolo) {
+    return GRUPPI.flatMap(([st, nome]) => {
+      const g = ts.filter(t => statoVisivo(t) === st);
+      if (!g.length) return [];
+      const ul = h('ul', 'task-elenco', g.map(riga));
+      if (st !== 'fatto') return [h(titolo, 'gruppo', [nome]), ul];
+      const conScelto = g.some(t => selezione && selezione.testo === t.testo && selezione.data === t.data);
+      return [h('details', 'gruppo-fatti', [h('summary', '', [h(titolo, 'gruppo', [nome + ' (' + g.length + ')'])]), ul], conScelto ? { open: '' } : {})];
+    });
+  }
 
   // ---- dati di prova (?prova=vuoto o ?prova=pieno): servono solo a verificare l'aspetto ----
   function prova(tipo) {
     if (tipo === 'vuoto') {
-      return { nodi: ['alfa', 'beta', 'gamma'].map(nome => ({ nome, tipo: 'progetto', priorita: 'da definire', haCartella: true, task: [] })), prossima: null, conteggi: { da_fare: 0, in_corso: 0, in_ritardo: 0 } };
+      return { nodi: ['alfa', 'beta', 'gamma'].map(nome => ({ nome, tipo: 'progetto', priorita: 'da definire', haCartella: true, task: [] })), prossima: null, conteggi: { da_fare: 0, in_corso: 0, in_ritardo: 0, pronti: 0, in_attesa: 0 } };
     }
     const nomi = ['Verificare il centralino con sessioni reali', 'Unire la PR della CI', 'Taratura del radar sui progetti attivi', 'Scrivere i test del parser', 'Inoltro email in configurazione', 'Aprire ai primi Club', 'Cron esterno per le notifiche', 'Pagare il dominio', 'Ridisegnare la pagina di accesso', 'Controllare i log del giovedì', 'Rispondere a chi ha scritto', 'Pubblicare le sei bozze', 'Conferma prima del voto', 'Android installa', 'Hardening del vault'];
     const stati = ['in_corso', 'da_fare', 'da_fare', 'da_fare', 'in_corso', 'da_fare', 'da_fare', 'da_fare', 'da_fare', 'da_fare', 'da_fare', 'da_fare', 'fatto', 'fatto', 'fatto'];
-    const task = nomi.map((testo, i) => ({ data: '2026-11-' + String(10 + i).padStart(2, '0'), testo, vista: testo, stato: stati[i], ritardo: i === 3 }));
+    // every state and error: a blocker in the same node (1), one in another node (linkedin), one of yours (7), a broken reference and a cycle
+    const blocco = { ci: { id: 'pr-ci', vista: nomi[1], nodo: 'Prova piena', chi: null }, li: { id: 'bozze-li', vista: 'Pubblicare 6 bozze', nodo: 'linkedin', chi: null }, te: { id: 'dominio', vista: nomi[7], nodo: 'Prova piena', chi: 'te' } };
+    const extra = { 1: { id: 'pr-ci' }, 2: { derivato: 'in_attesa', aspetta: [blocco.ci] }, 4: { derivato: 'incoerente', aspetta: [blocco.ci] }, 5: { derivato: 'in_attesa', aspetta: [blocco.li] },
+      6: { derivato: 'errore', errore: 'riferimento', mancanti: ['cron-vecchio'] }, 7: { id: 'dominio', chi: 'te' }, 8: { derivato: 'in_attesa', aspetta: [blocco.te] }, 9: { derivato: 'errore', errore: 'ciclo' } };
+    const task = nomi.map((testo, i) => ({ data: '2026-11-' + String(10 + i).padStart(2, '0'), testo, vista: testo, stato: stati[i], ritardo: i === 3,
+      id: null, chi: null, derivato: stati[i] === 'da_fare' ? 'pronto' : stati[i], errore: null, mancanti: [], aspetta: [], ...extra[i] }));
     return {
       nodi: [{ nome: 'Prova piena', tipo: 'progetto', priorita: 'alta', haCartella: true, task },
-        { nome: 'linkedin', tipo: 'argomento', priorita: null, haCartella: true, task: [{ data: '2026-11-12', testo: 'Pubblicare 6 bozze', vista: 'Pubblicare 6 bozze', stato: 'da_fare', ritardo: false }] }],
-      prossima: { nodo: 'Prova piena', ...task[0], motivo: 'in corso' }, conteggi: { da_fare: 11, in_corso: 2, in_ritardo: 1 },
+        { nome: 'linkedin', tipo: 'argomento', priorita: null, haCartella: true, task: [{ data: '2026-11-12', testo: 'Pubblicare 6 bozze', vista: 'Pubblicare 6 bozze', stato: 'da_fare', ritardo: false, id: 'bozze-li', chi: null, derivato: 'pronto', errore: null, mancanti: [], aspetta: [] }] }],
+      prossima: { nodo: 'Prova piena', ...task[0], motivo: 'in corso' }, conteggi: { da_fare: 11, in_corso: 2, in_ritardo: 1, pronti: 6, in_attesa: 5 },
     };
   }
 
@@ -104,11 +143,11 @@
     const parola = g < 13 ? 'Buongiorno' : g < 18 ? 'Buon pomeriggio' : 'Buonasera';
     const p = dati && dati.prossima;
     const h1 = h('h1', 'saluto', [parola + (dati && dati.nome ? ', ' + dati.nome : '') + '. ' + (p ? 'Prossimo: ' + brevePerSaluto(p.vista) + '.' : 'Niente di aperto.')]);
-    const c = dati ? dati.conteggi : { da_fare: 0, in_corso: 0, in_ritardo: 0 };
+    const c = dati ? dati.conteggi : { da_fare: 0, in_corso: 0, in_ritardo: 0, pronti: 0, in_attesa: 0 };
     const punto = (cl, n, testo) => h('span', 'conteggio', [h('i', 'punto ' + cl), h('b', '', [String(n)]), ' ' + testo]);
     $('mappa-saluto').replaceChildren(h1, h('p', 'saluto-sub', [
       ora.toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' }),
-      punto('st-da_fare', c.da_fare, 'da fare'), punto('st-in_corso', c.in_corso, 'in corso'), punto('ritardo', c.in_ritardo, 'in ritardo'),
+      punto('st-pronto', c.pronti, c.pronti === 1 ? 'pronto' : 'pronti'), punto('st-in_corso', c.in_corso, 'in corso'), punto('st-in_attesa', c.in_attesa, 'in attesa'), punto('ritardo', c.in_ritardo, 'in ritardo'),
     ]));
   }
 
@@ -233,7 +272,9 @@
     const sfondo = s('rect', { class: 'mappa-sfondo', x: 0, y: 0, width: W, height: H });
     sfondo.addEventListener('pointerenter', () => { if (!fuocoNeiSatelliti()) apri(fissato); });
     sfondo.addEventListener('click', () => { if (!trascinato) deseleziona(); });
-    svg.replaceChildren(sfondo);
+    // arrowhead of the dependency thread: a marker, so the path stays one element
+    const freccia = s('marker', { id: 'mappa-freccia', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto' }, [s('path', { d: 'M0 0L10 5L0 10z' })]);
+    svg.replaceChildren(s('defs', {}, [freccia]), sfondo);
     if (W < 2) return;                       // sotto i 760px l'SVG è nascosto: c'è la lista
     const mondo = s('g', { id: 'mappa-mondo' });   // tutto ciò che si zooma: nodi e satelliti
     svg.appendChild(mondo);
@@ -248,8 +289,8 @@
       const tot = n.task.length;
       if (tot) {
         let a0 = -Math.PI / 2;
-        for (const st of ['fatto', 'in_corso', 'da_fare']) {
-          const c = n.task.filter(t => t.stato === st).length;
+        for (const st of VISIVI) {
+          const c = n.task.filter(t => statoVisivo(t) === st).length;
           if (!c) continue;
           if (c === tot) { G.append(s('circle', { class: 'arco st-' + st, cx: x, cy: y, r: r - 5 })); break; }
           const a1 = a0 + c / tot * 2 * Math.PI;
@@ -258,7 +299,7 @@
         }
       }
       // scarti in em: il testo non scala con lo zoom, quindi la distanza dal disco deve seguire la sua grandezza
-      G.append(s('text', { class: 'num', x, y, dy: '0.35em' }, [String(aperti(n))]),
+      G.append(s('text', { class: 'num', x, y, dy: '0.35em' }, [String(pronti(n))]),
         s('text', { class: 'nome', x, y: y + r, dy: '1.55em' }, [taglia(n.nome, 22)]),
         s('text', { class: 'tipo', x, y: y + r, dy: '3.2em' }, [n.tipo === 'senza' ? 'da etichettare' : n.tipo]));
       if (haPiu(n)) G.append(piu(n, pos.get(n.nome)));
@@ -272,6 +313,7 @@
       nodiSvg.set(n.nome, G);
       mondo.appendChild(G);
     }
+    mondo.appendChild(s('g', { id: 'mappa-dipendenze' }));  // the thread of the selected waiting task, under the satellites
     mondo.appendChild(s('g', { id: 'mappa-satelliti' }));   // sempre ultimo: sta sopra tutti i nodi
     limita(); applicaVista();
     const da = aperto; aperto = null; apri(da, true);
@@ -279,7 +321,7 @@
 
   // satelliti del nodo aperto: tutti gli aperti, gli ultimi 2 fatti (in ordine di file) e «+k fatti»
   function voci(n) {
-    const v = n.task.filter(t => t.stato !== 'fatto').map(t => ({ t, stato: t.stato }));
+    const v = n.task.filter(t => t.stato !== 'fatto').map(t => ({ t, stato: statoVisivo(t) }));
     if (filtro === 'aperti') return v;
     const fatti = n.task.filter(t => t.stato === 'fatto');
     fatti.slice(-2).forEach(t => v.push({ t, stato: 'fatto' }));
@@ -319,16 +361,17 @@
     lista.forEach((v, i) => {
       const q = posiz[i], d = Math.hypot(q.x - p.x, q.y - p.y) || 1;
       fili.push(s('line', { class: 'filo', x1: p.x + (q.x - p.x) / d * (p.r + 6), y1: p.y + (q.y - p.y) / d * (p.r + 6), x2: q.x, y2: q.y }));
-      const testo = v.t ? v.t.vista : '+' + v.extra + ' fatti';
-      const G = s('g', { class: 'sat st-' + v.stato + (v.t && v.t.ritardo ? ' ritardo' : ''), transform: `translate(${q.x.toFixed(1)} ${q.y.toFixed(1)})` });
+      const testo = v.t ? v.t.vista : '+' + v.extra + ' fatti', perche = v.t ? motivi(v.t, n) : [];
+      const G = s('g', { class: 'sat st-' + v.stato + (v.t && v.t.ritardo ? ' ritardo' : '') + (v.t && v.t.derivato === 'errore' ? ' errore' : ''), transform: `translate(${q.x.toFixed(1)} ${q.y.toFixed(1)})` });
       const dentro = s('g', { class: 'sat-dentro' });
       const etichetta = taglia(testo, Math.max(6, Math.min(26, Math.floor(q.spazio / 6.3)))), larg = 18 + etichetta.length * 6.3;
       zona.append(s('line', { x1: p.x + (q.x - p.x) / d * p.r, y1: p.y + (q.y - p.y) / d * p.r, x2: q.x, y2: q.y, 'stroke-width': 28 }), s('rect', { x: q.lato > 0 ? q.x - 12 : q.x - larg, y: q.y - 12, width: larg + 12, height: 24 }));
       dentro.append(s('circle', { class: 'sat-punto', r: v.t ? 7 : 5 }),
         s('text', { dx: (q.lato * 1.1) + 'em', dy: '0.33em', 'text-anchor': q.lato > 0 ? 'start' : 'end' }, [etichetta]));
-      G.append(s('title', {}, [testo]), dentro);
+      G.append(s('title', {}, [[testo, ...perche].join('\n')]), dentro);
       if (v.t) {
-        G.setAttribute('tabindex', 0); G.setAttribute('role', 'button'); G.setAttribute('aria-label', testo + ', ' + NOME_STATO[v.stato]);
+        G.setAttribute('tabindex', 0); G.setAttribute('role', 'button'); G.setAttribute('aria-label', [testo, NOME_VISIVO[v.stato], ...perche].join(', '));
+        if (v.t.id) G.setAttribute('data-id', v.t.id);   // the thread finds a blocker in the same node by id
         G.addEventListener('click', e => { e.stopPropagation(); scegliTask(nome, v.t); });
         G.addEventListener('keydown', e => {
           const tutti = [...strato.querySelectorAll('.sat[tabindex]')], k = tutti.indexOf(G);
@@ -340,6 +383,34 @@
       sat.push(G);
     });
     strato.replaceChildren(zona, ...fili, ...sat, ...(haPiu(n) ? [piu(n, p)] : []));   // la zona trasparente tiene aperto il nodo finché il puntatore va verso i satelliti
+    filo();
+  }
+
+  // Thread of the selected waiting task: an arrow from every other node it waits on, and `bloccante` on the blockers
+  // in its own node. Never all threads at once. Redrawn from scratch on every selection change and redraw: O(blockers).
+  function filo() {
+    for (const el of document.querySelectorAll('#mappa-svg .bloccante')) el.classList.remove('bloccante');
+    const strato = $('mappa-dipendenze');
+    if (!strato) return;                     // narrow screen: no SVG, the panel and the list say it in words
+    strato.replaceChildren();
+    const n = selezione && nodoPer(fissato), t = n && n.task.find(x => x.testo === selezione.testo && x.data === selezione.data);
+    const q = t && statoVisivo(t) !== 'fatto' && pos.get(n.nome);
+    if (!q) return;
+    const sat = aperto === n.nome ? [...document.querySelectorAll('#mappa-satelliti .sat[data-id]')] : [];
+    const altri = new Set();
+    for (const a of t.aspetta) {
+      if (a.nodo !== n.nome) { altri.add(a.nodo); continue; }
+      const g = sat.find(x => x.getAttribute('data-id') === a.id);
+      if (g) g.classList.add('bloccante');
+    }
+    for (const nome of altri) {
+      const p = pos.get(nome);
+      if (!p) continue;                      // node filtered out: the panel still names it
+      nodiSvg.get(nome).classList.add('bloccante');
+      const dx = q.x - p.x, dy = q.y - p.y, cx = (p.x + q.x) / 2 - dy * 0.2, cy = (p.y + q.y) / 2 + dx * 0.2;   // a gentle bend
+      const bordo = (o, r) => { const ex = cx - o.x, ey = cy - o.y, e = Math.hypot(ex, ey) || 1; return (o.x + ex / e * r).toFixed(1) + ' ' + (o.y + ey / e * r).toFixed(1); };
+      strato.append(s('path', { class: 'dipendenza', d: `M${bordo(p, p.r + 6)}Q${cx.toFixed(1)} ${cy.toFixed(1)} ${bordo(q, q.r + 10)}`, 'marker-end': 'url(#mappa-freccia)' }));
+    }
   }
 
   const fuocoNeiSatelliti = () => { const e = document.activeElement; return !!(e && e.closest && e.closest('#mappa-satelliti')); };
@@ -370,10 +441,11 @@
       const ts = filtro === 'aperti' ? n.task.filter(t => t.stato !== 'fatto') : n.task;
       return h('li', '', [
         h('h3', '', [n.nome, h('span', 'tipo-nodo', [n.tipo === 'senza' ? 'da etichettare' : n.tipo]), h('span', 'sub', [contoAperti(n)])]),
-        ts.length ? h('ul', '', ts.map(t => h('li', 'task-lista st-' + t.stato, [
-          h('i', 'punto st-' + t.stato), bottone(t.vista, 'link' + (t.ritardo ? ' ritardo' : ''), () => { scegliTask(n.nome, t); $('mappa-dettaglio').scrollIntoView({ block: 'nearest' }); }),
-          h('span', 'sub', [NOME_STATO[t.stato] + (t.data ? ' · ' + giornoBreve(t.data) : '')]),
-        ]))) : null,
+        ...gruppi(ts, t => h('li', 'task-lista st-' + statoVisivo(t) + (t.derivato === 'errore' ? ' errore' : ''), [
+          h('i', 'punto st-' + statoVisivo(t)), bottone(t.vista, 'link' + (t.ritardo ? ' ritardo' : ''), () => { scegliTask(n.nome, t); $('mappa-dettaglio').scrollIntoView({ block: 'nearest' }); }),
+          h('span', 'sub', [NOME_VISIVO[statoVisivo(t)] + (t.data ? ' · ' + giornoBreve(t.data) : '')]),
+          ...motivi(t, n).map(m => h('span', 'sub motivo', [m])),
+        ]), 'h4'),
       ]);
     }));
   }
@@ -389,9 +461,12 @@
   const apriPost = () => { const b = document.querySelector('.schede button[data-vista="post"]'); if (b) b.click(); };   // le bozze si decidono in Post, non da qui
   function rigaTask(n, t) {
     const sel = selezione && selezione.testo === t.testo && selezione.data === t.data;
-    const li = h('li', 'task' + (sel ? ' scelto' : ''), [
-      h('span', 'task-testo' + (t.ritardo ? ' ritardo' : ''), [h('i', 'punto st-' + t.stato), t.vista, t.data ? h('span', 'sub', [' ' + (t.ritardo ? 'dal ' : '') + giornoBreve(t.data)]) : null]),
-      h('span', 'riga-azioni', t.bozza ? [bottone('Apri in Post', '', apriPost)] : [selettore(n, t), n.haCartella && t.stato !== 'fatto' ? bottone(t.stato === 'in_corso' ? 'Riavvia' : 'Avvia', '', () => conferma(n, t)) : null]),
+    const vis = statoVisivo(t), tuo = t.chi === 'te' && (t.derivato === 'pronto' || t.derivato === 'in_corso');
+    const li = h('li', 'task st-' + vis + (t.derivato === 'incoerente' ? ' incoerente' : '') + (t.derivato === 'errore' ? ' errore' : '') + (sel ? ' scelto' : ''), [
+      h('span', 'task-testo' + (t.ritardo ? ' ritardo' : ''), [h('i', 'punto st-' + vis), t.vista, t.data ? h('span', 'sub', [' ' + (t.ritardo ? 'dal ' : '') + giornoBreve(t.data)]) : null]),
+      ...motivi(t, n).map(m => h('span', 'sub motivo', [m])),
+      h('span', 'riga-azioni', t.bozza ? [bottone('Apri in Post', '', apriPost)] : [selettore(n, t),
+        n.haCartella && avviabile(t) ? bottone(t.derivato === 'in_corso' ? 'Riavvia' : 'Avvia', '', () => conferma(n, t)) : tuo ? h('span', 'sub tocca-a-te', ['Tocca a te']) : null]),
     ]);
     if (sel) li.setAttribute('aria-current', 'true');
     return li;
@@ -399,7 +474,8 @@
   function dettaglioNodo(n) {
     const p = n.tipo === 'progetto' ? progetti.find(x => x.nome.toLowerCase() === n.nome.toLowerCase()) : null;
     const c = p && p.attivita && p.attivita.commit && p.attivita.commit[0];
-    const avviabili = n.task.filter(t => !t.bozza), da = avviabili.find(t => t.stato === 'in_corso') || avviabili.find(t => t.stato === 'da_fare');   // «Avvia» parte dal passo già in corso, poi dal primo da fare
+    const avviabili = n.task.filter(avviabile), da = avviabili.find(t => t.derivato === 'in_corso') || avviabili.find(t => t.derivato === 'pronto');   // «Avvia» parte dal passo già in corso, poi dal primo pronto non tuo
+    const fermo = !da && n.task.find(t => t.derivato === 'in_attesa' && t.aspetta.length);   // nothing to launch: say what the node waits for
     return [
       h('h2', '', [n.nome, h('span', 'sub', [n.tipo === 'senza' ? 'da etichettare' : n.tipo + (n.priorita ? ' · priorità ' + n.priorita : '')])]),
       n.task.length ? h('p', 'sub conto-nodo', [contoAperti(n)]) : null,   // con zero task lo dice già il paragrafo vuoto sotto
@@ -407,7 +483,8 @@
       n.tipo === 'progetto' && n.haCartella && n.harness ? bloccoHarness(n) : null,   // solo se il modulo dell'harness è acceso: senza, il server non manda il campo
       p && p.doveSono ? h('p', 'dove-sono', [h('b', '', ['Dove sono ']), taglia(p.doveSono, 260)]) : null,
       c ? h('p', 'sub', ['Ultimo commit: ' + taglia(c.messaggio, 80) + (c.ramo ? ' (' + c.ramo + ')' : '')]) : null,
-      n.task.length ? h('ul', 'task-elenco', n.task.map(t => rigaTask(n, t))) : h('p', 'vuoto', [n.nome === 'Social' ? 'Nessuna bozza da pubblicare.' : 'Nessun task nel piano con questo tag.']),
+      ...(n.task.length ? gruppi(n.task, t => rigaTask(n, t), 'h3') : [h('p', 'vuoto', [n.nome === 'Social' ? 'Nessuna bozza da pubblicare.' : 'Nessun task nel piano con questo tag.'])]),
+      fermo ? h('p', 'sub', ['Niente da avviare: aspetta ' + bloccante(fermo.aspetta[0], n) + '.']) : null,
       h('div', 'riga-azioni', [
         da && n.haCartella ? bottone(da.stato === 'in_corso' ? 'Riavvia in Claude' : 'Avvia in Claude', 'primario', () => conferma(n, da)) : null,
         puoAggiungere(n) ? bottone('Aggiungi un task', '', () => nuovoTask(n)) : null,
@@ -422,10 +499,10 @@
     const t = n && n.task.find(x => x.testo === p.testo && x.data === p.data);
     return [
       h('h2', '', ['Prossima azione']),
-      h('div', 'dove', [h('i', 'punto st-' + p.stato), p.nodo + ' · ' + p.motivo]),
+      h('div', 'dove', [h('i', 'punto st-' + (p.stato === 'da_fare' ? 'pronto' : p.stato)), p.nodo + ' · ' + p.motivo]),
       h('p', 'titolo-azione', [p.vista]),
       t ? h('div', 'riga-azioni', [
-        n.haCartella ? bottone(t.stato === 'in_corso' ? 'Riavvia in Claude' : 'Avvia in Claude', 'primario', () => conferma(n, t)) : null,
+        n.haCartella && avviabile(t) ? bottone(t.derivato === 'in_corso' ? 'Riavvia in Claude' : 'Avvia in Claude', 'primario', () => conferma(n, t)) : null,
         bottone('Fatto', '', () => cambia(n, t, 'fatto')),
       ]) : null,
     ].concat(harnessDaDecidere());
@@ -488,8 +565,9 @@
     // le righe in ritardo dei prossimi giorni
     const g = giorni.slice(0, 5);
     $('prossimi-giorni').replaceChildren(...(g.length ? [h('h2', '', ['Prossimi giorni']), h('ul', 'prossimi', g.map(v => h('li', '', [
-      h('span', '', [v.testo]), h('span', 'quando' + (v.inRitardo ? ' ritardo' : ''), [v.inRitardo ? 'dal ' + giornoBreve(v.data) : giornoBreve(v.data)]),
+      h('span', '', [v.vista || v.testo]), h('span', 'quando' + (v.inRitardo ? ' ritardo' : ''), [v.inRitardo ? 'dal ' + giornoBreve(v.data) : giornoBreve(v.data)]),
     ])))] : []));
+    filo();
   }
 
   // ---- azioni ----
@@ -511,6 +589,8 @@
     doppia: 'Due voci uguali in piano.md: correggi in Obsidian.',
     cartella: 'Cartella non valida per questo task.',
     ripetuto: 'Già avviato: guarda il Terminale.',
+    in_attesa: 'Questo task aspetta altri task: si avvia quando sono fatti.',
+    tuo: 'Questo task tocca a te: Claude non lo avvia.',
     apertura: 'Non sono riuscito ad aprire il Terminale.',
     esiste: 'Esiste già un progetto con questo nome.',
     template: 'Mancano templates/STATE.md o templates/project-index-row.md.',
@@ -694,11 +774,11 @@
     ], { role: 'group', 'aria-label': 'Zoom della mappa' });
     [['Ingrandisci', 0], ['Riduci', 1], ['Adatta alla vista', 2]].forEach(([nome, i]) => zoom.children[i].setAttribute('aria-label', nome));
     svg.addEventListener('pointerleave', () => { if (!fuocoNeiSatelliti()) apri(fissato); });
-    const legenda = h('div', 'legenda', STATI.map(st => h('span', '', [h('i', 'punto st-' + st), NOME_STATO[st]])));
+    const legenda = h('div', 'legenda', GRUPPI.map(([st]) => h('span', '', [h('i', 'punto st-' + st), NOME_VISIVO[st]])));
     $('mappa-area').replaceChildren(h('div', 'mappa-box', [
       h('div', 'mappa-testa', [h('h2', '', ['Mappa del lavoro']), h('div', 'mappa-testa-azioni', [filtri, bottone('Nuovo progetto', '', nuovoProgetto)])]), svg, legenda, zoom,
       h('ul', 'mappa-lista', [], { id: 'mappa-lista', 'aria-label': 'Nodi e task, in elenco' }),
-    ]), h('p', 'nota-mappa', ['Il numero sul nodo = task aperti nel piano. Social: bozze da pubblicare.']));
+    ]), h('p', 'nota-mappa', ['Il numero sul nodo = task pronti da avviare. Social: bozze da pubblicare.']));
     new ResizeObserver(() => {
       const q = svg.clientWidth + 'x' + svg.clientHeight;
       if (dati && q !== dimensione) disegna();
@@ -738,7 +818,7 @@
   // un clic fuori dal task evidenziato (e dai satelliti, dalla lista e dai dialog) toglie l'evidenziazione
   document.addEventListener('click', e => {
     const dopoTrascinamento = trascinato; trascinato = false;   // il clic che segue uno spostamento non conta
-    if (dopoTrascinamento || !selezione || $('mappa-vista').hidden || e.target.closest('#mappa-dettaglio .task, #mappa-satelliti .sat, #mappa-lista, .mappa-zoom, dialog')) return;
+    if (dopoTrascinamento || !selezione || $('mappa-vista').hidden || e.target.closest('#mappa-dettaglio .task, #mappa-dettaglio summary, #mappa-satelliti .sat, #mappa-lista, .mappa-zoom, dialog')) return;
     selezione = null; pannello();
   });
   document.addEventListener('visibilitychange', () => { if (!document.hidden && !$('mappa-vista').hidden) carica(); });
@@ -751,10 +831,10 @@
     return dati && dati.nodi.find(n => n.nome.toLowerCase() === String(tag).toLowerCase());
   }
   async function avviaVoce(v) {
-    const { testo, tag } = window.Comp.senzaTag(v.titolo || v.testo);
+    const { testo, tag } = window.Comp.senzaTag(v.testo);  // v.titolo is already without the tag
     const n = await nodoDi(tag);
     if (!n) return toast('Nodo «' + tag + '» non trovato.');
-    conferma(n, { data: v.data, testo: v.testo, vista: testo });
+    conferma(n, { data: v.data, testo: v.testo, vista: v.vista || testo });
   }
 
   window.Mappa = { carica, imposta, avviaVoce, nodoDi };

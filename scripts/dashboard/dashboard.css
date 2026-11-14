@@ -524,6 +524,8 @@ td .pillola + button, td .pillola + p { margin-top: 8px; display: flex; }
 .conteggio b { color: var(--text); font-weight: 500; }
 .punto { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; flex: none; background: var(--todo); }
 .punto.st-da_fare { background: var(--todo); } .punto.st-in_corso { background: var(--doing); } .punto.st-fatto { background: var(--done); } .punto.ritardo { background: var(--late); }
+/* four map states: ready is solid grey, waiting is empty and dashed (never colour alone) */
+.punto.st-pronto { background: var(--todo); } .punto.st-in_attesa { background: none; border: 1.5px dashed var(--muted); box-sizing: border-box; }
 .mappa-box { position: relative; background: var(--raised); border-radius: var(--radius-card); height: clamp(520px, calc(100vh - 190px), 780px); overflow: hidden; }
 .mappa-testa { position: absolute; top: 16px; left: 20px; right: 20px; display: flex; justify-content: space-between; align-items: center; z-index: 2; pointer-events: none; }
 .mappa-testa h2 { font-size: 14px; font-weight: 600; margin: 0; }
@@ -564,6 +566,10 @@ td .pillola + button, td .pillola + p { margin-top: 8px; display: flex; }
 @keyframes respira { 50% { stroke-width: 5; opacity: .35; } }
 .st-da_fare .sat-punto, .sat.st-da_fare .sat-punto { fill: var(--todo); } .sat.st-in_corso .sat-punto { fill: var(--doing); } .sat.st-fatto .sat-punto { fill: var(--done); }
 path.arco.st-da_fare, circle.arco.st-da_fare { stroke: var(--todo); } path.arco.st-in_corso, circle.arco.st-in_corso { stroke: var(--doing); } path.arco.st-fatto, circle.arco.st-fatto { stroke: var(--done); }
+path.arco.st-pronto, circle.arco.st-pronto { stroke: var(--todo); }
+path.arco.st-in_attesa, circle.arco.st-in_attesa { stroke: var(--todo); stroke-width: 2; stroke-dasharray: 2 5; }
+.sat.st-pronto .sat-punto { fill: var(--todo); }
+.sat.st-in_attesa .sat-punto { fill: var(--raised); stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 2 2; }
 .sat { outline: none; cursor: default; }
 .sat[role="button"] { cursor: pointer; }
 .sat-dentro { animation: entra .3s cubic-bezier(.2, .8, .2, 1) both; }
@@ -572,6 +578,15 @@ path.arco.st-da_fare, circle.arco.st-da_fare { stroke: var(--todo); } path.arco.
 .sat text { font-size: calc(12px / var(--k, 1)); fill: var(--text); paint-order: stroke; stroke: var(--raised); stroke-width: calc(4px / var(--k, 1)); stroke-linejoin: round; }
 .sat.st-fatto text { fill: var(--faint); }
 .sat.ritardo text { fill: var(--late); }
+.sat.st-in_attesa text { fill: var(--muted); }
+.sat.st-in_attesa.ritardo text { fill: var(--late); }   /* late and blocked: the red wins over the waiting grey */
+.sat.errore text { fill: var(--late); }
+/* dependency thread of the selected waiting task: blockers in the same node are outlined, other nodes send an arrow */
+.sat.bloccante .sat-punto { stroke: var(--text); stroke-width: 2; stroke-dasharray: none; }
+.sat.bloccante text { font-weight: 600; }
+#mappa-svg.focus .nodo.bloccante { opacity: .75; }
+.dipendenza { fill: none; stroke: var(--muted); stroke-width: 1.5; pointer-events: none; }
+#mappa-freccia path { fill: var(--muted); }
 .sat[role="button"]:hover .sat-punto, .sat:focus-visible .sat-punto { stroke: var(--text); stroke-width: 2; }
 .zona, .zona * { fill: transparent; stroke: transparent; pointer-events: all; }
 .filo { stroke: var(--control); stroke-width: 1; }
@@ -594,6 +609,14 @@ path.arco.st-da_fare, circle.arco.st-da_fare { stroke: var(--todo); } path.arco.
 .stati button { border: 0; background: transparent; height: 26px; font-size: 12px; padding: 0 10px; color: var(--muted); }
 .stati button[aria-pressed="true"] { background: var(--active); color: var(--text); }
 .task .riga-azioni { margin-top: 0; }
+.task .motivo { font-size: 13px; }
+.task.st-in_attesa .task-testo { color: var(--muted); }
+.task.st-in_attesa .task-testo.ritardo { color: var(--late); }
+.task.errore .motivo, .task-lista.errore .motivo { color: var(--late); }
+.tocca-a-te { align-self: center; font-size: 12px; }
+.gruppo { font-size: 12px; font-weight: 600; color: var(--muted); margin: 16px 0 2px; }
+.gruppo-fatti summary .gruppo { display: inline; }
+.mappa-lista .gruppo { margin: 8px 0 2px; }
 .prossimi li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--rule); }
 .prossimi li:first-child { border-top: 0; }
 .prossimi .quando { color: var(--muted); white-space: nowrap; font-size: 13px; }

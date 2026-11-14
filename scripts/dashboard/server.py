@@ -49,6 +49,7 @@ limiti_modulo = _modulo(HERE / "limiti.py")
 modello_modulo = _modulo(HERE.parent / "modello.py")
 percorsi = _modulo(HERE.parent / "percorsi.py")
 calendario_modulo = _modulo(HERE.parent / "calendario.py")
+dipendenze = _modulo(HERE.parent / "dipendenze.py")
 BLOCCO_RICHIESTE = threading.Lock()  # una scrittura alla volta sul file delle richieste
 BLOCCO_PIANO = threading.Lock()  # lettura, modifica e scrittura di piano.md e scadenze.md: due clic veloci sono due thread
 BLOCCO_CONFIG = threading.Lock()  # un solo cambio alla volta ai file globali di Claude
@@ -501,7 +502,7 @@ def chiamate(ultime=200):
     return {"totale": len(righe), "perOperazione": per_op, "ultime": righe[-ultime:][::-1][:20]}
 
 
-VOCE_PIANO = re.compile(r"^- \[( |x|X|~)\] (.+?)\s*$")
+VOCE_PIANO = dipendenze.VOCE_PIANO
 TAG = re.compile(r"(?:^|\s)#([A-Za-z][\w-]*)")
 STATI = {"da_fare": " ", "in_corso": "~", "fatto": "x"}
 STATO_DA_CASELLA = {" ": "da_fare", "~": "in_corso", "x": "fatto", "X": "fatto"}
@@ -534,7 +535,9 @@ def leggi_sezioni(file):
             testo = v.group(2)
             d = DATA_PIANO.match(testo)
             grezzo = d.group(2) if d else testo
-            t = TAG.search(grezzo)
+            # `testo` and `grezzo` keep the markers: they are the task identity for ticking and launching
+            senza_marcatori, marcatori = dipendenze.separa_marcatori(grezzo)
+            t = TAG.search(senza_marcatori)
             stato = STATO_DA_CASELLA[v.group(1)]
             sezioni[-1]["voci"].append({
                 "fatto": stato == "fatto",
@@ -544,7 +547,8 @@ def leggi_sezioni(file):
                 "grezzo": grezzo,
                 "tag": t.group(1).lower() if t else None,
                 # testo senza il primo tag, spazi compattati
-                "vista": " ".join((grezzo[:t.start(1) - 1] + grezzo[t.end(1):]).split()) if t else grezzo,
+                "marcatori": marcatori,
+                "vista": " ".join((senza_marcatori[:t.start(1) - 1] + senza_marcatori[t.end(1):]).split()) if t else senza_marcatori,
             })
     return sezioni
 
@@ -710,11 +714,12 @@ def oggi(data, piano_file=None, scadenze_file=None):
             continue
         momento = _momento(v["data"]) if v["data"] else None
         if momento is None:
-            senza_data.append({"fonte": fonte, "testo": v["testo"]})
+            senza_data.append({"fonte": fonte, "testo": v["testo"], "vista": v["vista"]})
             continue
         con_data.append((momento[0], {
             "fonte": fonte,
             "testo": v["testo"],
+            "vista": v["vista"],
             "data": v["data"],
             "oraNota": momento[1],
             "inRitardo": momento[0] < data,
@@ -1052,7 +1057,9 @@ def task_social(vault):
             if b["stato"] == "da pubblicare":
                 titolo = re.sub(r"^Bozza \w+:\s*", "", b["titolo"])
                 out.append({"data": None, "testo": rete + "/" + b["nome"], "vista": rete.capitalize().replace("Linkedin", "LinkedIn") + ": " + titolo,
-                            "stato": "da_fare", "ritardo": False, "bozza": rete, "_progetto": b["progetto"]})
+                            "stato": "da_fare", "ritardo": False, "bozza": rete, "_progetto": b["progetto"],
+                            # drafts are outside the dependency graph: always ready, nothing to wait for
+                            "id": None, "chi": None, "derivato": "pronto", "errore": None, "mancanti": [], "aspetta": []})
     return out
 
 
@@ -1088,27 +1095,40 @@ def mappa(adesso, piano_file=None, vault=None):
             p = nodi.get(str(t.pop("_progetto") or "").lower())
             if p and p["tipo"] == "progetto":
                 p["task"].append(t)
-    aperte = []  # (nome nodo, task, ritardo, momento, progetto alta), in ordine di file
-    for sez in leggi_sezioni(piano_file or vault / "docs" / "piano.md"):
-        for v in sez["voci"]:
-            if v["tag"] is None and v["stato"] == "fatto":
-                continue
-            chiave = v["tag"] or "senza nodo"
-            if chiave not in nodi and chiave in indice:  # progetto del lavoro con almeno una voce
-                nodi[chiave] = nuovo(indice[chiave])
-            if chiave not in nodi:
-                nodi[chiave] = {"nome": v["tag"] or "Senza nodo", "tipo": "argomento" if v["tag"] else "senza",
-                                "priorita": None, "haCartella": True, "cartella": str(vault), "task": []}
-            nodo = nodi[chiave]
-            momento = _momento(v["data"]) if v["data"] else None
-            momento = momento[0] if momento else None
-            aperta = v["stato"] != "fatto"
-            ritardo = bool(aperta and momento and momento < adesso)
-            t = {"data": v["data"], "testo": v["testo"], "vista": v["vista"], "stato": v["stato"], "ritardo": ritardo}
-            nodo["task"].append(t)
-            if aperta:
-                aperte.append((nodo, t, ritardo, momento, nodo["priorita"] == "alta"))
-    scelta = _prossima(aperte, adesso)
+    aperte = []  # (nodo, task, ritardo, momento, progetto alta), in ordine di file
+    # The graph spans every plan row, also untagged and done ones. O(V+E) time and O(V) space; the pass over the rows stays O(V).
+    voci = [v for sez in leggi_sezioni(piano_file or vault / "docs" / "piano.md") for v in sez["voci"]]
+    derivati = dipendenze.stati_derivati(voci)
+    task_di = [None] * len(voci)  # task of each row (None for the untagged done rows, which have no node)
+    nodo_di = [None] * len(voci)
+    for i, v in enumerate(voci):
+        if v["tag"] is None and v["stato"] == "fatto":
+            continue
+        chiave = v["tag"] or "senza nodo"
+        if chiave not in nodi and chiave in indice:  # progetto del lavoro con almeno una voce
+            nodi[chiave] = nuovo(indice[chiave])
+        if chiave not in nodi:
+            nodi[chiave] = {"nome": v["tag"] or "Senza nodo", "tipo": "argomento" if v["tag"] else "senza",
+                            "priorita": None, "haCartella": True, "cartella": str(vault), "task": []}
+        nodo = nodi[chiave]
+        momento = _momento(v["data"]) if v["data"] else None
+        momento = momento[0] if momento else None
+        aperta = v["stato"] != "fatto"
+        ritardo = bool(aperta and momento and momento < adesso)
+        d = derivati[i]
+        t = {"data": v["data"], "testo": v["testo"], "vista": v["vista"], "stato": v["stato"], "ritardo": ritardo,
+             "id": v["marcatori"].get("id"), "chi": v["marcatori"].get("chi"), "derivato": d["derivato"],
+             "errore": d["errore"], "mancanti": d["mancanti"], "aspetta": []}
+        nodo["task"].append(t)
+        task_di[i], nodo_di[i] = t, nodo
+        if aperta:
+            aperte.append((nodo, t, ritardo, momento, nodo["priorita"] == "alta"))
+    for i, t in enumerate(task_di):  # a blocking row is open, so it always has a task and a node
+        if t:
+            t["aspetta"] = [{"id": voci[j]["marcatori"].get("id"), "vista": voci[j]["vista"], "nodo": nodo_di[j]["nome"],
+                             "chi": voci[j]["marcatori"].get("chi")} for j in derivati[i]["aspetta"]]
+    # What to do next: not what waits on something, not what only the user can do
+    scelta = _prossima([r for r in aperte if r[1]["derivato"] in ("pronto", "in_corso") and r[1]["chi"] != "te"], adesso)
     prossima = None
     if scelta:
         n, t, motivo = scelta
@@ -1119,7 +1139,10 @@ def mappa(adesso, piano_file=None, vault=None):
     out = {"nodi": ordinati, "prossima": prossima, "nome": nome_per_saluto(vault),
            "conteggi": {"da_fare": conta(lambda r: r[1]["stato"] == "da_fare"),
                         "in_corso": conta(lambda r: r[1]["stato"] == "in_corso"),
-                        "in_ritardo": conta(lambda r: r[2])}}
+                        "in_ritardo": conta(lambda r: r[2]),
+                        "pronti": conta(lambda r: r[1]["derivato"] == "pronto"),
+                        # a task in error is drawn as waiting (ring and label), so the header counts it the same way
+                        "in_attesa": conta(lambda r: r[1]["derivato"] in ("in_attesa", "errore"))}}
     if harness_attivo:  # chi resta da decidere compare finché non c'è una risposta: un silenzio non vale come un no
         out["harness"] = {"attivo": True, "daDecidere": sorted(n["nome"] for n in ordinati if (n.get("harness") or {}).get("stato") == "da decidere")}
     return out
@@ -1251,7 +1274,8 @@ def _apri_console_windows(cartella, prompt, esegui=None, quale=None):
 
 def avvia_claude(data, testo, esegui=None, piano_file=None, vault=None, cartella_avvii=None, sistema=None, adesso=time.monotonic, quale=None):
     """Apre un terminale con `claude` nella cartella del nodo della voce e la mette in corso. macOS (Terminale) e Windows (console nuova).
-    NotImplementedError: altro sistema. LookupError: voce assente. RuntimeError con codice: doppia, cartella, ripetuto, apertura.
+    NotImplementedError: altro sistema. LookupError: voce assente. RuntimeError con codice: doppia, tuo,
+    in_attesa (ogni stato che non sia pronto o in corso, anche fatto), cartella, ripetuto, apertura.
     Il testo della voce non finisce mai in una stringa di shell o di AppleScript: su macOS sta in un file letto da `cat`,
     su Windows è un argomento di claude.exe lanciato senza shell."""
     sistema = sistema or sys.platform
@@ -1265,6 +1289,11 @@ def avvia_claude(data, testo, esegui=None, piano_file=None, vault=None, cartella
     if len(trovati) > 1:
         raise RuntimeError("doppia")
     nodo, task = trovati[0]
+    # Refuse before any side effect (folder lookup, debounce, terminal, piano.md): hand-ticking stays free, launching does not.
+    if task["chi"] == "te":
+        raise RuntimeError("tuo")
+    if task["derivato"] not in ("pronto", "in_corso"):  # allow-list: fatto, a wait, an error or any future state stays put
+        raise RuntimeError("in_attesa")
     cartella = cartella_nodo(nodo, vault)
     if cartella is None:
         raise RuntimeError("cartella")
@@ -1507,7 +1536,7 @@ def _calendario_o_errore():
 
 def _scadenze_prossime(adesso):
     """Voci con data da piano, scadenze, rinnovi dei servizi e post non ancora pubblicati."""
-    voci = [{"fonte": f, "testo": v["testo"], "data": v["data"], "fatto": False}
+    voci = [{"fonte": f, "testo": v["testo"], "vista": v["vista"], "data": v["data"], "fatto": False}
             for f, lista in (("piano", [x for sez in leggi_sezioni(VAULT / "docs" / "piano.md") for x in sez["voci"]]), ("scadenze", scadenze(None)))
             for v in lista if not v["fatto"] and v["data"] and _momento(v["data"])]
     for p in servizi_modulo.servizi(VAULT / "docs" / "servizi.md"):
@@ -1539,10 +1568,12 @@ def _plurale(n, uno, molti):
     return "%d %s" % (n, uno if n == 1 else molti)
 
 
-def voci_attesa(bozze_rete, controllo_skill, avvii_dati):
+def voci_attesa(bozze_rete, controllo_skill, avvii_dati, compiti=None, rotte=0, piano_illeggibile=False):
     """«Aspetta te»: ciò che chiede una decisione adesso, in ordine di urgenza. Ogni voce porta alla pagina dove decidere (`link`).
 
-    Job non riusciti (fallito, mancato, mai partito), aggiornamenti di skill già scansionati (stato «nuova»), bozze da pubblicare.
+    Job non riusciti (fallito, mancato, mai partito), aggiornamenti di skill già scansionati (stato «nuova»), compiti `chi:te` pronti
+    (`compiti`: le loro viste), dipendenze rotte del piano (`rotte`: quanti task; `verify` le segnala solo come avvisi),
+    il piano che non si è potuto leggere (`piano_illeggibile`), bozze da pubblicare.
     Un job «saltato» (ha girato e non c'era nulla da fare) o in ritardo non è un problema da decidere."""
     voci = []
     job = [j for j in avvii_dati.get("job", []) if isinstance(j, dict) and j.get("stato") in ("fallito", "mancato", "mai")]
@@ -1553,18 +1584,33 @@ def voci_attesa(bozze_rete, controllo_skill, avvii_dati):
     skill = [s for s in elenco if isinstance(s, dict) and s.get("stato") == "nuova"] if isinstance(elenco, list) else None
     if skill:
         voci.append({"tipo": "skill_da_aggiornare", "testo": _plurale(len(skill), "aggiornamento di skill", "aggiornamenti di skill"), "link": "configurazione"})
+    compiti = compiti or []
+    for c in compiti:
+        voci.append({"tipo": "compito_tuo", "testo": c, "link": "mappa"})
+    if rotte:
+        voci.append({"tipo": "dipendenza_rotta", "testo": "%d task con dipendenze da correggere" % rotte, "link": "mappa"})
+    if piano_illeggibile:
+        voci.append({"tipo": "mappa_illeggibile", "testo": "Non riesco a leggere il piano per le dipendenze", "link": "mappa"})
     bozze = [b for lista in bozze_rete.values() if isinstance(lista, list) for b in lista if isinstance(b, dict) and b.get("stato") == "da pubblicare"]
     if bozze:
         voci.append({"tipo": "bozza_da_pubblicare", "testo": _plurale(len(bozze), "bozza da pubblicare", "bozze da pubblicare"), "link": "post"})
     n = len(voci)
     fatto = "Niente aspetta te." if not n else "Una cosa aspetta te." if n == 1 else "%d cose aspettano te." % n
-    return {"voci": voci, "fatto": fatto, "conteggi": {"job": len(job), "skill": None if skill is None else len(skill), "bozze": len(bozze)}}
+    return {"voci": voci, "fatto": fatto, "conteggi": {"job": len(job), "skill": None if skill is None else len(skill),
+                                                            "compiti": len(compiti), "rotte": rotte, "bozze": len(bozze)}}
 
 
 def attesa():
     # Le bozze si contano solo se il modulo è attivo: «Apri» porterebbe a una pagina che il modulo nasconde.
     bozze = bozze_per_rete() if moduli_attivi().get("bozze") else {}
-    return voci_attesa(bozze, ultimo_controllo_skill(), avvii())
+    # A plan that cannot be read must not hide the failed jobs: it becomes a row of its own instead.
+    try:
+        task = [t for n in mappa(datetime.now())["nodi"] for t in n["task"] if "bozza" not in t]
+        compiti = [t["vista"] for t in task if t["chi"] == "te" and t["derivato"] == "pronto"]
+        rotte, illeggibile = sum(1 for t in task if t["derivato"] == "errore"), False
+    except Exception:
+        compiti, rotte, illeggibile = [], 0, True
+    return voci_attesa(bozze, ultimo_controllo_skill(), avvii(), compiti, rotte, piano_illeggibile=illeggibile)
 
 
 def servizi_dati(adesso=None):

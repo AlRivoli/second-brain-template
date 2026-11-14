@@ -149,6 +149,25 @@ class PianoStatoTest(unittest.TestCase):
         self.assertTrue(o["conData"][0]["inRitardo"])
         self.assertEqual(o["conData"][0]["testo"], "ieri")
 
+    def test_vista_senza_marcatori_testo_grezzo_invariato(self):
+        v = server.leggi_sezioni(scrivi("## A\n- [ ] #alfa uno id:u1 dopo:u0\n") / "piano.md")[0]["voci"][0]
+        self.assertEqual((v["testo"], v["grezzo"], v["vista"], v["marcatori"]),
+                         ("#alfa uno id:u1 dopo:u0", "#alfa uno id:u1 dopo:u0", "uno", {"id": "u1", "dopo": ["u0"]}))
+
+    def test_spunta_conserva_marcatori_e_crlf(self):
+        d = scrivi("## A\r\n- [ ] #alfa uno id:u1\r\n- [ ] due\r\n")
+        server.imposta_stato("piano", None, "#alfa uno id:u1", "fatto", d)
+        self.assertEqual((d / "piano.md").read_bytes(), b"## A\r\n- [x] #alfa uno id:u1\r\n- [ ] due\r\n")
+
+    def test_oggi_e_scadenze_hanno_la_vista(self):
+        d = scrivi("## S\n- [ ] 2026-11-20 — #alfa paga id:p1\n- [ ] #alfa senza data id:p2\n")
+        o = server.oggi(datetime(2026, 11, 10, 8), piano_file=d / "piano.md", scadenze_file=Path("/nonexistent"))
+        self.assertEqual((o["conData"][0]["testo"], o["conData"][0]["vista"]), ("#alfa paga id:p1", "paga"))
+        self.assertEqual((o["senzaData"][0]["testo"], o["senzaData"][0]["vista"]), ("#alfa senza data id:p2", "senza data"))
+        with mock.patch.object(server, "VAULT", vault_finto("## S\n- [ ] 2026-11-20 — #alfa paga id:p1\n")):
+            voce = [x for x in server._scadenze_prossime(ADESSO) if x["fonte"] == "piano"][0]
+        self.assertEqual((voce["testo"], voce["vista"]), ("#alfa paga id:p1", "paga"))
+
 
 ADESSO = datetime(2026, 11, 9, 19, 0)
 
@@ -241,7 +260,7 @@ class MappaTest(unittest.TestCase):
 
     def test_conteggi(self):
         m = mappa_di("## A\n- [ ] 2026-11-01 — a\n- [ ] b\n- [~] c\n- [x] #alfa d\n")
-        self.assertEqual(m["conteggi"], {"da_fare": 2, "in_corso": 1, "in_ritardo": 1})
+        self.assertEqual(m["conteggi"], {"da_fare": 2, "in_corso": 1, "in_ritardo": 1, "pronti": 2, "in_attesa": 0})
 
     def test_lavoro_mai_risolto(self):
         v = vault_finto("")
@@ -272,6 +291,64 @@ class MappaTest(unittest.TestCase):
         (v / "projects" / "alfa" / "STATE.md").write_text("- **Repo:** %s\n" % (v / "link-y"), encoding="utf-8")
         self.assertIsNone(server.cartella_nodo({"nome": "alfa", "tipo": "progetto"}, v))
         self.assertEqual(server.cartella_nodo({"nome": "linkedin", "tipo": "argomento"}, v), v)
+
+    def test_mappa_stati_derivati_tra_nodi(self):
+        m = mappa_di("## A\n- [ ] #alfa uno id:u1\n- [ ] #beta due dopo:u1\n## Fatti\n- [x] tre id:t3\n- [ ] #alfa quattro dopo:t3\n")
+        t = {x["vista"]: x for n in m["nodi"] for x in n["task"]}
+        self.assertEqual((t["uno"]["derivato"], t["due"]["derivato"], t["quattro"]["derivato"]), ("pronto", "in_attesa", "pronto"))
+        self.assertEqual(t["due"]["aspetta"], [{"id": "u1", "vista": "uno", "nodo": "alfa", "chi": None}])
+        self.assertEqual((m["conteggi"]["pronti"], m["conteggi"]["in_attesa"]), (2, 1))
+
+    def test_mappa_task_porta_id_chi_errore_e_mancanti(self):
+        m = mappa_di("## A\n- [ ] #alfa uno id:u1 chi:te\n- [ ] #alfa due dopo:zz\n")
+        t = {x["vista"]: x for n in m["nodi"] for x in n["task"]}
+        self.assertEqual((t["uno"]["id"], t["uno"]["chi"], t["uno"]["errore"], t["uno"]["mancanti"], t["uno"]["aspetta"]), ("u1", "te", None, [], []))
+        self.assertEqual((t["due"]["id"], t["due"]["chi"], t["due"]["derivato"], t["due"]["errore"], t["due"]["mancanti"]),
+                         (None, None, "errore", "riferimento", ["zz"]))
+
+    def test_bozze_social_sono_pronte_e_fuori_dai_conteggi(self):
+        v = vault_finto("## A\n- [ ] #alfa uno\n")
+        con_bozze(v, linkedin={"2026-11-02-b.md": "Bozza linkedin: B"})
+        m = server.mappa(ADESSO, piano_file=v / "docs" / "piano.md", vault=v)
+        social = next(n for n in m["nodi"] if n["nome"] == "Social")
+        self.assertEqual([(t["derivato"], t["aspetta"]) for t in social["task"]], [("pronto", [])])
+        self.assertEqual((m["conteggi"]["pronti"], m["conteggi"]["in_attesa"]), (1, 0))
+
+    def test_prossima_salta_in_attesa_anche_in_ritardo_e_i_compiti_tuoi(self):
+        m = mappa_di("## A\n- [ ] 2026-10-01 — #alfa vecchia dopo:x1\n- [ ] #alfa x id:x1 chi:te\n- [ ] #alfa libera\n")
+        self.assertEqual(m["prossima"]["vista"], "libera")
+
+    def test_aspetta_te_elenca_i_compiti_tuoi_pronti(self):
+        a = server.voci_attesa({}, None, {"job": []}, compiti=["Ruotare i segreti"])
+        self.assertEqual(a["voci"][0], {"tipo": "compito_tuo", "testo": "Ruotare i segreti", "link": "mappa"})
+        self.assertEqual(a["conteggi"]["compiti"], 1)
+
+    def test_aspetta_te_segnala_le_dipendenze_rotte(self):
+        a = server.voci_attesa({}, None, {"job": []}, rotte=2)
+        self.assertEqual((a["voci"][0]["tipo"], a["voci"][0]["link"], a["conteggi"]["rotte"]), ("dipendenza_rotta", "mappa", 2))
+        self.assertEqual(a["voci"][0]["testo"], "2 task con dipendenze da correggere")
+
+    def test_attesa_prende_compiti_e_rotte_dalla_mappa(self):
+        m = mappa_di("## A\n- [ ] #alfa mio id:m1 chi:te\n- [ ] #alfa dopo m1 dopo:m1 chi:te\n- [ ] #alfa rotto dopo:zz\n- [x] #alfa fatto chi:te\n")
+        with mock.patch.object(server, "mappa", return_value=m), mock.patch.object(server, "moduli_attivi", return_value={}), \
+                mock.patch.object(server, "ultimo_controllo_skill", return_value=None), mock.patch.object(server, "avvii", return_value={"job": []}):
+            a = server.attesa()
+        self.assertEqual([(x["tipo"], x["testo"]) for x in a["voci"]],
+                         [("compito_tuo", "mio"), ("dipendenza_rotta", "1 task con dipendenze da correggere")])
+
+    def test_attesa_tiene_i_job_falliti_se_la_mappa_non_si_legge(self):
+        job = {"job": [{"nome": "radar", "stato": "fallito", "motivo": "exit 1"}]}
+        with mock.patch.object(server, "mappa", side_effect=OSError("illeggibile")), mock.patch.object(server, "moduli_attivi", return_value={}), \
+                mock.patch.object(server, "ultimo_controllo_skill", return_value=None), mock.patch.object(server, "avvii", return_value=job):
+            a = server.attesa()
+        self.assertEqual([x["tipo"] for x in a["voci"]], ["job_fallito", "mappa_illeggibile"])
+        self.assertEqual(a["voci"][1], {"tipo": "mappa_illeggibile", "testo": "Non riesco a leggere il piano per le dipendenze", "link": "mappa"})
+        self.assertEqual((a["fatto"], a["conteggi"]["compiti"], a["conteggi"]["rotte"]), ("2 cose aspettano te.", 0, 0))
+
+    def test_conteggio_in_attesa_include_gli_errori(self):
+        # the header counts what the ring draws: a task in error is drawn as waiting
+        m = mappa_di("## A\n- [ ] #alfa rotto dopo:zz\n- [ ] #alfa libero\n")
+        self.assertEqual((m["conteggi"]["pronti"], m["conteggi"]["in_attesa"]), (1, 1))
 
 
 def con_bozze(v, **per_rete):
@@ -305,7 +382,7 @@ class SocialTest(unittest.TestCase):
         v = vault_finto("## A\n- [ ] #alfa uno\n")
         con_bozze(v, linkedin={"2026-11-01-a.md": "Bozza LinkedIn: primo"})
         m, _ = self.nodo(v)
-        self.assertEqual(m["conteggi"], {"da_fare": 1, "in_corso": 0, "in_ritardo": 0})
+        self.assertEqual(m["conteggi"], {"da_fare": 1, "in_corso": 0, "in_ritardo": 0, "pronti": 1, "in_attesa": 0})
         self.assertEqual(m["prossima"]["nodo"], "alfa")
 
     def test_tag_social_nel_piano_finisce_nello_stesso_nodo(self):
@@ -324,7 +401,7 @@ class SocialTest(unittest.TestCase):
         alfa = next(x for x in m["nodi"] if x["nome"] == "alfa")
         self.assertEqual([t["testo"] for t in alfa["task"] if t.get("bozza")], ["linkedin/2026-11-01-a.md"])
         self.assertEqual(len(social["task"]), 2)                      # resta anche in Social
-        self.assertEqual(m["conteggi"], {"da_fare": 1, "in_corso": 0, "in_ritardo": 0})
+        self.assertEqual(m["conteggi"], {"da_fare": 1, "in_corso": 0, "in_ritardo": 0, "pronti": 1, "in_attesa": 0})
         self.assertEqual(m["prossima"]["nodo"], "alfa")
         self.assertEqual(m["prossima"]["testo"], "#alfa uno")          # la bozza non diventa prossima azione
 
@@ -526,6 +603,51 @@ class AvvioTest(unittest.TestCase):
             self.avvia_windows(v, av, errore=OSError("non parte"))
         self.assertEqual(str(c.exception), "apertura")
         self.assertEqual(server.ULTIMI_AVVII, {})
+
+    def assert_rifiutato_senza_effetti(self, piano, testo, codice, sistema):
+        v, av = self.prepara(piano)
+        file = v / "docs" / "piano.md"
+        prima = file.read_bytes()
+        chiamate = []
+        with self.assertRaises(RuntimeError) as c:
+            server.avvia_claude(None, testo, esegui=lambda *a, **k: chiamate.append(a), piano_file=file, vault=v, cartella_avvii=av,
+                                sistema=sistema, quale=lambda nome: r"C:\bin\claude.exe")
+        self.assertEqual(str(c.exception), codice)
+        self.assertEqual(chiamate, [], "nessun terminale aperto")
+        self.assertEqual(file.read_bytes(), prima, "piano.md invariato")
+        self.assertFalse(av.exists())
+        self.assertEqual(server.ULTIMI_AVVII, {}, "nessun debounce registrato")
+
+    def test_avvia_rifiuta_task_in_attesa_senza_aprire_nulla(self):
+        casi = {
+            "in_attesa": ("- [ ]", "#alfa b dopo:a1"),
+            "incoerente": ("- [~]", "#alfa b dopo:a1"),
+            "errore": ("- [ ]", "#alfa b id:b1 dopo:b1"),  # self-cycle
+        }
+        for nome, (casella, testo) in casi.items():
+            piano = "## A\n- [ ] #alfa a id:a1\n%s %s\n" % (casella, testo)
+            for sistema in ("darwin", "win32"):
+                with self.subTest(caso=nome, sistema=sistema):
+                    self.assert_rifiutato_senza_effetti(piano, testo, "in_attesa", sistema)
+
+    def test_avvia_rifiuta_compito_tuo(self):
+        piano = "## A\n- [ ] #alfa ruota id:r1 chi:te\n"
+        for sistema in ("darwin", "win32"):
+            with self.subTest(sistema=sistema):
+                self.assert_rifiutato_senza_effetti(piano, "#alfa ruota id:r1 chi:te", "tuo", sistema)
+
+    def test_avvia_rifiuta_task_fatto(self):
+        # allow-list: only pronto and in_corso launch, so a state added later cannot slip through
+        piano = "## A\n- [x] #alfa chiuso\n"
+        for sistema in ("darwin", "win32"):
+            with self.subTest(sistema=sistema):
+                self.assert_rifiutato_senza_effetti(piano, "#alfa chiuso", "in_attesa", sistema)
+
+    def test_avvia_task_pronto_con_dipendenza_fatta_parte(self):
+        v, av = self.prepara("## A\n- [x] #alfa a id:a1\n- [ ] #alfa b dopo:a1\n")
+        r, chiamate = self.avvia(v, av, "#alfa b dopo:a1")
+        self.assertTrue(r["avviato"])
+        self.assertEqual(len(chiamate), 1)
 
     def test_avvio_pulisce_i_file_vecchi(self):
         v, av = self.prepara()

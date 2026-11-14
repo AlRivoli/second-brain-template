@@ -68,6 +68,38 @@ class VerifyTest(unittest.TestCase):
             code, out = run_verify(tmp)
             self.assertEqual(code, 0, out)
 
+    def test_dipendenze_rotte_sono_avvisi_e_verify_passa(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), extra={'docs/piano.md': '## A\n- [ ] a dopo:zz\n'})
+            code, out = run_verify(tmp)
+            self.assertEqual(code, 0, out)
+            self.assertIn('docs/piano.md:2: avviso:', out)
+            self.assertIn('OK', out)
+
+    def test_senza_dipendenze_py_un_avviso_e_verify_passa(self):
+        # the module is loaded from next to the script: a copy of verify alone, or next to a broken module
+        for modulo in (None, 'raise ImportError("rotto")\n', 'def x(:\n'):
+            with self.subTest(modulo=modulo), tempfile.TemporaryDirectory() as tmp:
+                vault, cartella = pathlib.Path(tmp) / 'vault', pathlib.Path(tmp) / 'scripts'
+                vault.mkdir()
+                cartella.mkdir()
+                make_vault(vault, extra={'docs/piano.md': '## A\n- [ ] a dopo:zz\n'})
+                (cartella / 'verify').write_bytes(VERIFY.read_bytes())
+                if modulo:
+                    (cartella / 'dipendenze.py').write_text(modulo, encoding='utf-8')
+                result = subprocess.run([sys.executable, str(cartella / 'verify'), str(vault)], capture_output=True, text=True)
+                out = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 0, out)
+                self.assertIn('dipendenze.py assente: controllo delle dipendenze saltato', out)
+                self.assertNotIn('Traceback', out)
+                self.assertTrue(out.rstrip().endswith('OK'), out)
+
+    def test_dipendenze_valide_non_danno_avvisi(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), extra={'docs/piano.md': '## A\n- [x] a id:a\n- [ ] b dopo:a\n'})
+            code, out = run_verify(tmp)
+            self.assertEqual((code, out.strip()), (0, 'OK'))
+
     def test_readme_che_non_cita_un_job_o_un_comando(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

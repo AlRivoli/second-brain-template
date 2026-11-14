@@ -28,6 +28,8 @@ def _carica(nome, file):
 
 
 modello = _carica("modello", "modello.py")
+percorsi = _carica("percorsi", "percorsi.py")
+CONFIG_ILLEGGIBILE = "config.json non leggibile: non posso escludere la cartella riservata, nessuna novità mandata al modello"
 
 MAX_VOCI = 150  # voci mandate al modello in una chiamata
 MAX_SCHEDE = 8  # un giorno di lettura a settimana: poche schede, scelte bene
@@ -51,15 +53,14 @@ ISTRUZIONI = (
 
 
 def cartelle_escluse(vault):
-    """Cartelle di projects/ che non vanno mai a un modello in cloud: lavoro, _private e la cartella riservata scelta al setup."""
-    nomi = {"lavoro", "_private"}
+    """I nomi (in minuscolo) delle cartelle di projects/ che non vanno mai a un modello in cloud: lavoro, _private e la cartella
+    riservata scelta al setup, in qualunque maiuscola, letta come la dashboard (percorsi.scelta_riservata: BOM compreso).
+    RuntimeError se config.json c'è ma non si legge o non ha la forma attesa: la cartella riservata non si conosce, quindi
+    il radar non manda niente (ADR-002). Senza config.json valgono le cartelle fisse."""
     try:
-        scelta = json.loads((Path(vault) / "config.json").read_text(encoding="utf-8"))["moduli"]["riservata"]["cartella"].replace("\\", "/")
-        if scelta.startswith("projects/") and scelta.count("/") == 1:
-            nomi.add(scelta.split("/")[1])
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        pass
-    return {n.casefold() for n in nomi}
+        return percorsi.nomi_riservati(percorsi.scelta_riservata(Path(vault)))
+    except RuntimeError as e:
+        raise RuntimeError(getattr(e, "motivo", None) or CONFIG_ILLEGGIBILE) from None
 
 
 def profili(vault=VAULT):
@@ -196,7 +197,7 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     try:
         out = radar_claude(file=Path(argv[0]) if argv else None)
-    except (modello.ModelloNonDisponibile, modello.RispostaNonUtilizzabile, ValueError) as e:
+    except (modello.ModelloNonDisponibile, modello.RispostaNonUtilizzabile, ValueError, RuntimeError) as e:  # RuntimeError: config.json
         print("radar: %s" % e, file=sys.stderr)
         return 1
     print("radar: scritto %s" % out)

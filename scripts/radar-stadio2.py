@@ -20,8 +20,8 @@ _spec.loader.exec_module(modello)
 def _ruolo():
     """Chi legge il radar, per il prompt: `ruolo_radar` di config.json (per esempio "un ingegnere full stack")."""
     try:
-        return json.loads((VAULT / "config.json").read_text(encoding="utf-8")).get("ruolo_radar") or "una persona che lavora con il software"
-    except (OSError, ValueError):
+        return json.loads((VAULT / "config.json").read_text(encoding="utf-8-sig")).get("ruolo_radar") or "una persona che lavora con il software"
+    except (OSError, ValueError, RecursionError):
         return "una persona che lavora con il software"
 
 

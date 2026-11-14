@@ -826,6 +826,7 @@
     in_attesa: 'Questo task aspetta altri task: si avvia quando sono fatti.',
     tuo: 'Questo task tocca a te: Claude non lo avvia.',
     apertura: 'Non sono riuscito ad aprire il Terminale.',
+    config: 'config.json non leggibile o non valido: l\'avvio è sospeso finché non lo correggi.',
     esiste: 'Esiste già un progetto con questo nome.',
     template: 'Mancano templates/STATE.md o templates/project-index-row.md.',
     riga: 'La riga del progetto in INDEX.md non si legge: correggi in Obsidian.',

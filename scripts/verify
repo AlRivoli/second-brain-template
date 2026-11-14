@@ -96,16 +96,18 @@ def check_projects(root, problems):
 
     projects_dir = root / 'projects'
     private_dirs = set(PRIVATE_DIRS)
-    try:  # la cartella riservata scelta al setup (moduli.riservata.cartella), se sta dentro projects/
-        scelta = json.loads((root / 'config.json').read_text(encoding='utf-8-sig'))['moduli']['riservata']['cartella']
-        if scelta.replace('\\', '/').startswith('projects/') and scelta.count('/') == 1:
-            private_dirs.add(scelta.split('/')[1])
+    try:  # la cartella riservata scelta al setup (moduli.riservata.cartella), se sta dentro projects/, in qualunque maiuscola e con barre di ogni tipo
+        parti = [p for p in json.loads((root / 'config.json').read_text(encoding='utf-8-sig'))['moduli']['riservata']['cartella']
+                 .replace('\\', '/').split('/') if p]
+        if len(parti) == 2 and parti[0].casefold() == 'projects':
+            private_dirs.add(parti[1])
     except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError):
-        pass
+        pass  # verify is not a cloud boundary: a broken config.json keeps the fixed folders, it never crashes the check
+    private_dirs = {d.casefold() for d in private_dirs}  # NTFS and APFS: «Confidential-Notes» is the same folder
     folders = []
     if projects_dir.exists():
         folders = sorted(p.name for p in projects_dir.iterdir()
-                         if p.is_dir() and not p.name.startswith('.') and p.name not in private_dirs)
+                         if p.is_dir() and not p.name.startswith('.') and p.name.casefold() not in private_dirs)
 
     for name in rows:
         if not (projects_dir / name).is_dir():

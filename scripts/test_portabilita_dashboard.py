@@ -72,10 +72,12 @@ class PiuRepoTest(unittest.TestCase):
             vault = Path(d)
             (vault / "projects" / "negozio").mkdir(parents=True)
             (vault / "projects" / "INDEX.md").write_text("| [[projects/negozio/STATE\\|negozio]] | x | y | z | 2026-11-01 |\n")
-            (vault / "projects" / "negozio" / "STATE.md").write_text("- **Repo:** /x/backend\n- **Repo:** /x/app\n")
+            # absolute on every system: on Windows a path without a drive letter is not a local path, so it is never served
+            backend, app = vault / "x" / "backend", vault / "x" / "app"
+            (vault / "projects" / "negozio" / "STATE.md").write_text("- **Repo:** %s\n- **Repo:** %s\n" % (backend, app))
             with mock.patch.object(server, "VAULT", vault):
                 progetti = server._progetti_con_repo()
-        self.assertEqual(progetti, {"negozio": [Path("/x/backend/docs"), Path("/x/app/docs")]})
+        self.assertEqual(progetti, {"negozio": [backend / "docs", app / "docs"]})
 
 
 if __name__ == "__main__":

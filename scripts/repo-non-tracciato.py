@@ -9,11 +9,12 @@ Uso: scripts/repo-non-tracciato.py [--cwd DIR]
          percorso (ADR-002: nel vault non devono finire nomi di clienti).
 
 Un repo è tracciato se il suo percorso è in una riga «Repo:» di un projects/*/STATE.md (un progetto può averne più
-d'una, una per repo). La cartella riservata del
-lavoro non si legge (ADR-001, ADR-002). Un worktree conta come il suo repo principale.
+d'una, una per repo). Le cartelle del lavoro e riservata, in qualunque maiuscola, non si leggono (ADR-001, ADR-002).
+Un worktree conta come il suo repo principale.
 """
 import argparse
 import hashlib
+import importlib.util
 import re
 import subprocess
 import sys
@@ -22,7 +23,11 @@ from datetime import date, timedelta
 from pathlib import Path
 
 VAULT = Path(__file__).resolve().parent.parent
-PRIVATE_DIRS = {"lavoro", "_private"}
+# The dashboard's reading of the reserved folder and of network paths (percorsi.py), loaded from the file: under -I the
+# script's folder is not on sys.path, and the dashboard loads this script the same way
+_spec = importlib.util.spec_from_file_location("percorsi", Path(__file__).resolve().parent / "percorsi.py")
+percorsi = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(percorsi)
 REPO = re.compile(r"^- \*\*Repo:\*\* (.+)$", re.M)
 PAUSA_GIORNI = 7
 SCELTE = {"ignora": "ignora", "lavoro": "lavoro", "non-ora": "non ora"}
@@ -54,12 +59,15 @@ def impronta(repo):
 
 
 def tracciato(repo, vault):
+    riservate = percorsi.cartelle_riservate(vault)  # tolerant: a session hook never fails, it only skips these folders
     for stato in (vault / "projects").glob("*/STATE.md"):
-        if stato.parent.name in PRIVATE_DIRS:
+        if stato.parent.name.casefold() in riservate:
             continue
         # A project can span several repos, one `Repo:` line each: any of them makes the repo tracked.
         for percorso in REPO.findall(stato.read_text(encoding="utf-8", errors="replace")):
-            if Path(percorso.strip()).expanduser().resolve() == repo:
+            percorso = Path(percorso.strip()).expanduser()
+            # text first: resolving a network line (\\srv, //srv, a mapped drive) would connect at every session start
+            if percorsi.percorso_locale(percorso) and percorso.resolve() == repo:
                 return True
     return False
 

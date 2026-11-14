@@ -21,8 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "dashboard"))
 import richieste as rq  # noqa: E402
 
 VAULT = Path(__file__).resolve().parent.parent
+CONFIG_ILLEGGIBILE = "config.json non leggibile: non posso escludere la cartella riservata, nessuna richiesta elaborata"
 LOGS = percorsi.cartella_log()
-ESCLUSI = ("lavoro", "_private")  # note di lavoro e riservate: mai verso un LLM in cloud (ADR-001, ADR-002)
 LOCK_SCADUTO = 30 * 60
 CAMPI = ("titolo", "descrizione", "didascalia", "hashtag", "testo_alternativo", "come_pubblicare")
 FORMATO_SCHEDA = {"carosello": "carosello", "immagine": "immagine", "storia": "storia", "video": "video"}
@@ -140,16 +140,14 @@ def elabora(file_rq, vault=VAULT, run=subprocess.run, adesso=None, log=print):
 
 
 def cartelle_escluse(vault=VAULT):
-    """I nomi (in minuscolo) delle cartelle di projects/ che non vanno mai a un modello: ESCLUSI più la cartella riservata
-    scelta al setup (moduli.riservata.cartella), come fa scripts/verify."""
-    nomi = set(ESCLUSI)
+    """I nomi (in minuscolo) delle cartelle di projects/ che non vanno mai a un modello: lavoro, _private e la cartella riservata
+    scelta al setup (moduli.riservata.cartella), in qualunque maiuscola, letta come la dashboard (percorsi.scelta_riservata).
+    RuntimeError(CONFIG_ILLEGGIBILE) se config.json c'è ma non si legge o non ha la forma attesa: la cartella riservata non si
+    conosce, quindi non si elabora niente (ADR-002). Senza config.json valgono le cartelle fisse."""
     try:
-        scelta = json.loads((Path(vault) / "config.json").read_text(encoding="utf-8"))["moduli"]["riservata"]["cartella"].replace("\\", "/")
-        if scelta.startswith("projects/") and scelta.count("/") == 1:
-            nomi.add(scelta.split("/")[1])
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        pass
-    return {n.casefold() for n in nomi}
+        return percorsi.nomi_riservati(percorsi.scelta_riservata(Path(vault)))
+    except RuntimeError as e:
+        raise RuntimeError(getattr(e, "motivo", None) or CONFIG_ILLEGGIBILE) from None
 
 
 def da_elaborare(vault=VAULT):
@@ -167,7 +165,11 @@ def main():
         return 0
     try:
         while True:  # finché la dashboard ne aggiunge mentre lavoro
-            file = da_elaborare()
+            try:
+                file = da_elaborare()
+            except RuntimeError as e:  # config.json illeggibile: le richieste restano nuove, il job risulta fallito
+                print(e, file=sys.stderr)
+                return 1
             if not file:
                 return 0
             for f in file:

@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Test di harness-progetti.py: la decisione si legge dallo STATE, lo stato dal repo. Nessun modello, nessuna scrittura."""
+import contextlib
 import importlib.util
+import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 RADICE = Path(__file__).resolve().parent.parent
 SCRIPT = RADICE / "scripts" / "harness-progetti.py"
@@ -17,6 +21,23 @@ spec.loader.exec_module(hp)
 OGGI = "2026-11-11"
 RIEPILOGO = {"schema": 1, "date": "2026-11-10", "commit": "abc1234", "pass": 40, "fail": 6, "na": 0, "fail_alta": 2,
              "estensioni_pass": 0, "estensioni_totale": 0, "strati_mancanti": [1, 11]}
+
+
+def senza_rete(*moduli):
+    """Path.exists/is_dir/is_file/resolve fail on a network path; Z: is a mapped share in the given copies of percorsi."""
+    pila = contextlib.ExitStack()
+    for nome in ("exists", "is_dir", "is_file", "resolve"):
+        def guardia(percorso, *a, _vero=getattr(Path, nome), **k):
+            if str(percorso).startswith(("\\\\", "//")) or percorso.drive.upper() == "Z:":
+                raise AssertionError("disco di rete toccato: %s" % percorso)
+            return _vero(percorso, *a, **k)
+        pila.enter_context(mock.patch.object(Path, nome, guardia))
+    for modulo in moduli:
+        pila.enter_context(mock.patch.object(modulo, "tipo_unita", side_effect=lambda unita: 4 if unita.upper() == "Z:" else 3))
+    return pila
+
+
+RIGHE_DI_RETE = ["\\\\srv\\share\\x", "//srv/share/y"] + (["Z:\\repo"] if os.name == "nt" else [])
 
 
 def riepilogo(**campi):
@@ -178,6 +199,36 @@ class HarnessProgettiTest(unittest.TestCase):
         (self.vault / "config.json").write_text(json.dumps({"moduli": {"riservata": {"cartella": "projects/confidential-notes"}}}), encoding="utf-8")
         self.progetto("alfa", [], None)
         self.assertEqual(sorted(self.stati()), ["alfa"])
+
+    def test_la_cartella_riservata_con_altre_maiuscole_non_si_legge(self):
+        # setup.py accepts «Projects/Confidential-Notes»: on NTFS and APFS it is projects/confidential-notes
+        self.progetto("confidential-notes", [self.repo("cn", RIEPILOGO)], "adeguare (2026-11-10)")
+        self.progetto("alfa", [], None)
+        for scelta in ("Projects/Confidential-Notes", "projects\\CONFIDENTIAL-NOTES"):
+            with self.subTest(scelta=scelta):
+                (self.vault / "config.json").write_text(json.dumps({"moduli": {"riservata": {"cartella": scelta}}}), encoding="utf-8")
+                self.assertEqual(sorted(self.stati()), ["alfa"])
+
+    def test_config_illeggibile_non_apre_nessun_repo(self):
+        # ADR-002, fail closed: with the reserved folder unknown no project's repos are opened, and the command says so
+        self.progetto("alfa", [self.repo("alfa", RIEPILOGO)], "adeguare (2026-11-10)")
+        for testo in (b"{rotto", b'{"moduli": []}', b'{"moduli": {"riservata": {"cartella": "../fuori"}}}'):
+            with self.subTest(testo=testo):
+                (self.vault / "config.json").write_bytes(testo)
+                with mock.patch.object(hp, "repo_del_progetto", side_effect=AssertionError("repo aperto")), \
+                        mock.patch.object(hp, "leggi_riepilogo", side_effect=AssertionError("repo aperto")):
+                    self.assertEqual(hp.stato_progetti(self.vault, OGGI), [])
+                    out, err = io.StringIO(), io.StringIO()
+                    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                        self.assertEqual(hp.main(["--vault", str(self.vault), "--oggi", OGGI]), 1)
+                self.assertEqual(out.getvalue(), "")
+                self.assertIn("config.json", err.getvalue())
+
+    def test_un_repo_di_rete_non_si_tocca(self):
+        locale = self.repo("alfa")
+        testo = "".join("- **Repo:** %s\n" % r for r in RIGHE_DI_RETE + [str(locale)])
+        with senza_rete(hp.percorsi):
+            self.assertEqual(hp.repo_del_progetto(testo), [locale])
 
     def test_non_scrive_niente(self):
         self.progetto("alfa", [self.repo("alfa", RIEPILOGO)], "adeguare (2026-11-10)")

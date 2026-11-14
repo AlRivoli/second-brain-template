@@ -45,8 +45,8 @@ def valida_nome(nome):
 def scelta(passo, vault=VAULT):
     """(provider, modello) del passo, da config.json. 'ollama:qwen3:8b' -> ('ollama', 'qwen3:8b'); 'claude' -> ('claude', '')."""
     try:
-        cfg = json.loads((Path(vault) / "config.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        cfg = json.loads((Path(vault) / "config.json").read_text(encoding="utf-8-sig"))  # -sig: a BOM from a Windows editor
+    except (OSError, ValueError, RecursionError):
         cfg = {}
     provider, _, nome = str(cfg.get("modelli", {}).get(passo, "none")).partition(":")
     if provider not in ("claude", "ollama", "none"):

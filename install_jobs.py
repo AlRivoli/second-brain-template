@@ -48,8 +48,8 @@ def cartella_log(sistema, home):
 
 def leggi_config(radice=RADICE):
     try:
-        return json.loads((Path(radice) / "config.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        return json.loads((Path(radice) / "config.json").read_text(encoding="utf-8-sig"))  # -sig: a BOM from Notepad
+    except (OSError, ValueError, RecursionError):
         return {}
 
 
@@ -249,10 +249,7 @@ def main(argv=None):
         sys.exit("--os for another system needs --out or --dry-run")
     ctx = contesto(sistema)
     jobs = json.loads((RADICE / "scripts" / "jobs.json").read_text(encoding="utf-8"))
-    try:
-        config = json.loads((RADICE / "config.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        config = {}
+    config = leggi_config()
     scelti = seleziona(jobs, sistema, a.only.split(",") if a.only else None, a.all, config)
     if not scelti:
         sys.exit("no job to register for %s" % sistema)

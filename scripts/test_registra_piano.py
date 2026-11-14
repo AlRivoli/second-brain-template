@@ -99,6 +99,21 @@ class Base(unittest.TestCase):
         return codice, out.getvalue(), err.getvalue()
 
 
+def crea_link(link, bersaglio):
+    """A directory symlink, or on Windows a junction (no privilege needed). False when the system makes neither."""
+    try:
+        os.symlink(bersaglio, link, target_is_directory=True)
+        return True
+    except OSError:
+        pass
+    try:
+        import _winapi  # Windows only: the same call test.support uses for junctions
+        _winapi.CreateJunction(str(bersaglio), str(link))
+        return True
+    except (OSError, ImportError, AttributeError):
+        return False
+
+
 def vault_in(d, piano=PIANO_BASE, obiettivi=OBIETTIVI_BASE):
     (d / "projects" / "sb").mkdir(parents=True)
     (d / "projects" / "INDEX.md").write_text(
@@ -439,12 +454,14 @@ class ConfigTest(Base):
     def test_config_con_bom_riconosce_la_cartella_riservata(self):
         d = self.vault()
         (d / "config.json").write_text(json.dumps({"moduli": {"riservata": {"cartella": "projects/segreto"}}}), encoding="utf-8-sig")
-        self.assertIn("segreto", rp.server._cartelle_riservate(d))
+        self.assertIn("segreto", rp.leggi_riservata(d)[0])
         self.assertRifiuta(PIANO_VALIDO, "segreto", "rel", d=d, contiene="--tag")
 
     def test_config_illeggibile_rifiuta(self):
-        for testo in (b"{non json", b"[1, 2]", b"\xff\xfe", b"[" * 100000):
-            with self.subTest(testo=testo[:10]):
+        for testo in (b"{non json", b"[1, 2]", b"\xff\xfe", b"[" * 100000, b'{"moduli": []}', b'{"moduli": {"riservata": []}}',
+                      b'{"moduli": {"riservata": {"attivo": true}}}', b'{"moduli": {"riservata": {"cartella": 5}}}',
+                      b'{"moduli": {"riservata": {"cartella": "../fuori"}}}', b'{"moduli": {"riservata": {"cartella": "~/note-mie"}}}'):
+            with self.subTest(testo=testo[:40]):
                 d = self.vault()
                 (d / "config.json").write_bytes(testo)
                 prima = (leggi(d, "piano.md"), leggi(d, "obiettivi.md"))
@@ -452,6 +469,39 @@ class ConfigTest(Base):
                     rp.registra(PIANO_VALIDO, "sb", "rel", d)
                 self.assertEqual(str(e.exception), "config.json non leggibile: non posso escludere la cartella riservata")
                 self.assertEqual((leggi(d, "piano.md"), leggi(d, "obiettivi.md")), prima)
+
+    def test_cartella_riservata_scritta_con_altre_maiuscole(self):
+        # setup.py accepts «Projects/Segreto»: on NTFS and APFS it is projects/segreto, so its tag is refused
+        for scelta in ("Projects/Segreto", "projects\\SEGRETO"):
+            with self.subTest(scelta=scelta):
+                d = self.vault()
+                (d / "config.json").write_text(json.dumps({"moduli": {"riservata": {"cartella": scelta}}}), encoding="utf-8")
+                self.assertRifiuta(PIANO_VALIDO, "segreto", "rel", d=d, contiene="--tag")
+
+    def test_config_letta_una_volta_per_chiamata(self):
+        d, app = self.vault_con_repo()
+        f = app / "p.md"
+        f.write_text(PIANO_VALIDO, encoding="utf-8")
+        with mock.patch.object(rp.server.percorsi, "scelta_riservata", side_effect=rp.server.percorsi.scelta_riservata) as letture:
+            rp.percorso_del_piano(f, "sb", d)
+            self.assertEqual(letture.call_count, 1)
+            letture.reset_mock()
+            rp.registra(PIANO_VALIDO, "sb", "rel", d)
+            self.assertEqual(letture.call_count, 1)
+
+    def test_senza_moduli_py_rifiuta_e_dice_perche(self):
+        # the wizard's rule for the reserved folder lives in moduli.py: without it nothing is trusted, and the message says so
+        d, app = self.vault_con_repo()
+        (app / "p.md").write_text(PIANO_VALIDO, encoding="utf-8")
+        with mock.patch.object(rp.server.percorsi, "_valida_cartella", side_effect=FileNotFoundError("moduli.py")):
+            with self.assertRaises(RuntimeError) as e:
+                rp.server.percorsi.scelta_riservata(d)
+            self.assertEqual(str(e.exception), "config")
+            codice, _, err = self.main(d, app / "p.md", "--tag", "sb", "--obiettivo", "rel", "--senza-commit")
+        self.assertEqual(codice, 1)
+        self.assertIn("moduli.py", err)
+        self.assertNotIn("config.json non leggibile", err)
+        self.assertEqual(leggi(d, "piano.md"), PIANO_BASE)
 
     def test_config_illeggibile_esce_con_1(self):
         d, app = self.vault_con_repo()
@@ -545,6 +595,64 @@ class PercorsoPianoTest(Base):
                 f.write_text(PIANO_VALIDO, encoding="utf-8")
                 self.assertRifiutato(d, f, "il piano non può stare in projects/ del vault")
 
+    def test_piano_nella_cartella_riservata_fuori_da_projects_rifiutato(self):
+        # setup.py accepts any folder inside the vault: the vault is a repo of sb, still the reserved notes are never a plan
+        for scelta in ("riservati-casa", "docs/clienti-segreti", "projects/clienti/archivio"):
+            with self.subTest(scelta=scelta):
+                d, _ = self.vault_con_repo()
+                (d / "config.json").write_text(json.dumps({"moduli": {"riservata": {"cartella": scelta}}}), encoding="utf-8")
+                (d / scelta).mkdir(parents=True)
+                f = d / scelta / "p.md"
+                f.write_text(PIANO_VALIDO, encoding="utf-8")
+                self.assertRifiutato(d, f, "il piano non può stare in projects/ del vault")
+
+    def test_piano_nel_bersaglio_di_una_cartella_riservata_collegata_rifiutato(self):
+        # the reserved folder is a link into a repo of sb: the plan reached through the repo is still a reserved note
+        for nome in ("_" + "private", "lavoro", "segreto"):
+            with self.subTest(nome=nome):
+                d, app = self.vault_con_repo()
+                bersaglio = app / "note"
+                bersaglio.mkdir()
+                if not crea_link(d / "projects" / nome, bersaglio):
+                    self.skipTest("né link simbolici né junction disponibili")
+                f = bersaglio / "p.md"
+                f.write_text(PIANO_VALIDO, encoding="utf-8")
+                self.assertRifiutato(d, f, "il piano non può stare in projects/ del vault")
+
+    def test_piano_nella_cartella_riservata_di_un_altro_vault_rifiutato(self):
+        # another checkout of a vault is a repo of sb: its projects/<reserved> notes are never a plan either
+        for nome in ("_" + "private", "_" + "PRIVATE", "lavoro", "segreto", "lavoro/cliente/docs"):
+            with self.subTest(nome=nome):
+                d, _ = self.vault_con_repo()
+                altro = self.cartella()
+                stato = d / "projects" / "sb" / "STATE.md"
+                stato.write_text(stato.read_text(encoding="utf-8") + "- **Repo:** %s\n" % altro, encoding="utf-8")
+                (altro / "projects" / nome).mkdir(parents=True)
+                f = altro / "projects" / nome / "p.md"
+                f.write_text(PIANO_VALIDO, encoding="utf-8")
+                self.assertRifiutato(d, f, "il piano non può stare nelle note riservate di un vault")
+        # the folder configured outside projects/ is refused at the same relative path of another vault (a folder with
+        # projects/), in any case; its leaf name alone blocks nothing
+        d, _ = self.vault_con_repo()
+        (d / "config.json").write_text(json.dumps({"moduli": {"riservata": {"cartella": "docs/archivio"}}}), encoding="utf-8")
+        altro, senza_projects = self.cartella(), self.cartella()
+        stato = d / "projects" / "sb" / "STATE.md"
+        stato.write_text(stato.read_text(encoding="utf-8") + "".join("- **Repo:** %s\n" % r for r in (altro, senza_projects)), encoding="utf-8")
+        (altro / "projects" / "sb").mkdir(parents=True)
+        for rel in ("docs/archivio/p.md", "DOCS/Archivio/x/p.md"):
+            with self.subTest(rel=rel):
+                f = altro / rel
+                f.parent.mkdir(parents=True, exist_ok=True)
+                f.write_text(PIANO_VALIDO, encoding="utf-8")
+                self.assertRifiutato(d, f, "il piano non può stare nelle note riservate di un vault")
+        for radice, rel in ((altro, "projects/archivio/p.md"), (altro, "projects/sb/p.md"), (senza_projects, "docs/archivio/p.md")):
+            with self.subTest(radice=radice.name, rel=rel):
+                g = radice / rel
+                g.parent.mkdir(parents=True, exist_ok=True)
+                g.write_text(PIANO_VALIDO, encoding="utf-8")
+                self.assertEqual(rp.percorso_del_piano(g, "sb", d)[1], rel)
+        self.assertNotIn("archivio", rp.leggi_riservata(d)[0])  # --tag archivio stays a valid project name
+
     def test_piano_inesistente_o_con_spazi_o_progetto_non_valido(self):
         d, app = self.vault_con_repo()
         self.assertRifiutato(d, app / "manca.md", "il file del piano non esiste")
@@ -630,6 +738,7 @@ class CliTest(Base):
     def vault_cli(self):
         d, app = self.vault_con_repo()
         shutil.copytree(RADICE / "scripts", d / "scripts", ignore=shutil.ignore_patterns("__pycache__", "test_*"))
+        shutil.copy(RADICE / "moduli.py", d / "moduli.py")  # the wizard's rule for the reserved folder, as in a real vault
         return d, app
 
     def lancia(self, d, piano, *argomenti):

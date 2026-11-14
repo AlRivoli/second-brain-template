@@ -41,8 +41,8 @@ footer{{font-size:{pie}px;color:#5b6678}}
 def firma():
     """Il nome in fondo all'immagine: la chiave `nome_firma` di config.json nella radice del vault. Senza file, nessuna firma."""
     try:
-        return str(json.loads((Path(__file__).resolve().parent.parent / "config.json").read_text(encoding="utf-8")).get("nome_firma", ""))
-    except (OSError, ValueError):
+        return str(json.loads((Path(__file__).resolve().parent.parent / "config.json").read_text(encoding="utf-8-sig")).get("nome_firma", ""))
+    except (OSError, ValueError, RecursionError):
         return ""
 
 

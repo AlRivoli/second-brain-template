@@ -1,10 +1,13 @@
+import contextlib
 import importlib.util
+import io
 import json
 import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location("elabora", Path(__file__).parent / "elabora-richieste.py")
 e = importlib.util.module_from_spec(spec)
@@ -71,6 +74,65 @@ class ElaboraTest(unittest.TestCase):
     def test_senza_config_valgono_le_cartelle_fisse(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(e.cartelle_escluse(Path(d)), {"lavoro", "_private"})
+
+    def vault_con_richieste(self, d, config):
+        vault = Path(d)
+        (vault / "config.json").write_bytes(config)
+        for nome in ("demo", "confidential-notes"):
+            cartella = vault / "projects" / nome
+            cartella.mkdir(parents=True)
+            e.rq.aggiungi(cartella / "post-linkedin-richieste.json", nome, "linkedin", {"formato": "immagine", "tema": "tema", "riferimento": None}, set(), ADESSO)
+        return vault
+
+    def test_config_con_bom_esclude_la_cartella_scelta(self):
+        # a config.json saved by a Windows editor starts with a BOM: the chosen reserved folder must still be excluded
+        config = json.dumps({"moduli": {"riservata": {"attivo": True, "cartella": "projects/confidential-notes"}}}).encode("utf-8-sig")
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual([f.parent.name for f in e.da_elaborare(self.vault_con_richieste(d, config))], ["demo"])
+
+    def test_cartella_riservata_scritta_con_altre_maiuscole(self):
+        # setup.py accepts «Projects/Secret»: on NTFS and APFS it is projects/secret, whose requests never reach claude -p
+        for scelta in ("Projects/Secret", "projects\\Secret", "PROJECTS/SECRET"):
+            with self.subTest(scelta=scelta), tempfile.TemporaryDirectory() as d:
+                vault = Path(d)
+                (vault / "config.json").write_text(json.dumps({"moduli": {"riservata": {"attivo": True, "cartella": scelta}}}), encoding="utf-8")
+                for nome in ("demo", "secret"):
+                    cartella = vault / "projects" / nome
+                    cartella.mkdir(parents=True)
+                    e.rq.aggiungi(cartella / "post-linkedin-richieste.json", nome, "linkedin", {"formato": "immagine", "tema": "tema", "riferimento": None}, set(), ADESSO)
+                self.assertEqual([f.parent.name for f in e.da_elaborare(vault)], ["demo"])
+
+    def test_senza_moduli_py_non_elabora_e_dice_perche(self):
+        config = json.dumps({"moduli": {"riservata": {"attivo": True, "cartella": "projects/confidential-notes"}}}).encode()
+        with tempfile.TemporaryDirectory() as d:
+            vault = self.vault_con_richieste(d, config)
+            vero = e.da_elaborare
+            with mock.patch.object(e.percorsi, "_valida_cartella", side_effect=FileNotFoundError("moduli.py")), \
+                    mock.patch.object(e, "LOGS", vault), mock.patch.object(e, "da_elaborare", lambda: vero(vault)), \
+                    mock.patch.object(e, "elabora", side_effect=AssertionError("richiesta elaborata")), \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(e.main(), 1)
+            self.assertIn("moduli.py", err.getvalue())
+
+    def test_config_illeggibile_non_elabora_niente(self):
+        # ADR-002, fail closed: with config.json unreadable the reserved folder is unknown, so no request goes to the model
+        for config in (b"{non json", b"[1, 2]", b"\xff\xfe", b"[" * 100000, b'{"moduli": {"riservata": {"cartella": 5}}}',
+                       b'{"moduli": []}', b'{"moduli": {"riservata": []}}', b'{"moduli": {"riservata": {"attivo": true}}}',
+                       b'{"moduli": {"riservata": {"cartella": "../fuori"}}}', b'{"moduli": {"riservata": {"cartella": "/assoluta/note"}}}'):
+            with self.subTest(config=config[:20]), tempfile.TemporaryDirectory() as d:
+                vault = self.vault_con_richieste(d, config)
+                with self.assertRaises(RuntimeError) as c:
+                    e.da_elaborare(vault)
+                self.assertEqual(str(c.exception), e.CONFIG_ILLEGGIBILE)
+                vero = e.da_elaborare
+                with mock.patch.object(e, "LOGS", vault), mock.patch.object(e, "da_elaborare", lambda: vero(vault)), \
+                        mock.patch.object(e, "elabora", side_effect=AssertionError("richiesta elaborata")), \
+                        contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(e.main(), 1)
+                self.assertIn(e.CONFIG_ILLEGGIBILE, err.getvalue())
+                self.assertFalse((vault / "second-brain-richieste.lock").exists())
+                for f in (vault / "projects").glob("*/post-linkedin-richieste.json"):
+                    self.assertEqual(json.loads(f.read_text(encoding="utf-8"))["richieste"][0]["stato"], "nuova")
 
 
 if __name__ == "__main__":

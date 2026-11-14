@@ -5,7 +5,8 @@ Uso: scripts/registra-piano.py <piano.md> --tag <progetto> --obiettivo <slug> [-
      [--giorni lun,mar,...|tutti] [--piano-rel <percorso relativo>] [--senza-commit]
 
 Il vault è sempre quello in cui sta lo script. Il piano viene da un altro repo: è un dato non fidato. Deve essere un file di
-uno dei repo del progetto (righe `Repo:` del suo STATE), mai dentro projects/ del vault né nella cartella riservata (ADR-002);
+uno dei repo del progetto (righe `Repo:` del suo STATE), mai dentro projects/ del vault né nella cartella riservata, ovunque
+sia e anche dove porta se è un link, né in projects/<lavoro o cartella riservata> di un altro vault (ADR-002);
 `piano:` è il suo percorso relativo alla radice di quel repo (--piano-rel, se passato, deve essere uguale). Si apre solo in
 lettura (.md, al massimo 1 MB) e se ne ricavano solo il titolo `# `, i titoli `### Task <N>: <titolo>` e tre campi per task:
 `**Dipende da:** Task 1, Task 3` (oppure `nessuna`), `**Stima:** 3h|1g` e `**Repo:** <nome>`. I blocchi di codice si saltano.
@@ -25,7 +26,6 @@ GIT_* di chi lo lancia. Tempo e spazio O(righe del piano + righe dei due file + 
 """
 import argparse
 import importlib.util
-import json
 import os
 import re
 import subprocess
@@ -77,18 +77,31 @@ def _testo_vietato(testo):
             or any(unicodedata.category(c) in server.CATEGORIE_VIETATE for c in testo))
 
 
-def cartelle_riservate(vault):
-    """server._cartelle_riservate, failing closed: a config.json that exists but cannot be read, parsed or is not a JSON
-    object could hide the reserved folder, so it is RuntimeError(CONFIG_ILLEGGIBILE). A missing config.json is fine."""
+def leggi_riservata(vault):
+    """(reserved names under projects/, the setup's reserved folder or None) from one reading of config.json, failing closed:
+    a config.json that exists but cannot be read, is ill-shaped or names a folder the setup wizard would refuse could hide the
+    reserved folder, so it is RuntimeError(CONFIG_ILLEGGIBILE) (percorsi.scelta_riservata). A missing config.json is fine."""
     try:
-        config = json.loads((vault / "config.json").read_text(encoding="utf-8-sig"))
-    except FileNotFoundError:
-        config = {}
-    except (OSError, ValueError, RecursionError):  # ValueError covers UnicodeDecodeError and JSONDecodeError
-        raise RuntimeError(CONFIG_ILLEGGIBILE) from None
-    if not isinstance(config, dict):
-        raise RuntimeError(CONFIG_ILLEGGIBILE)
-    return server._cartelle_riservate(vault)
+        scelta = server.percorsi.scelta_riservata(vault)
+    except RuntimeError as e:
+        raise RuntimeError(getattr(e, "motivo", None) or CONFIG_ILLEGGIBILE) from None
+    return server.percorsi.nomi_riservati(scelta), scelta
+
+
+def _in_riservata_di_un_vault(percorso, scelta):
+    """The path holds, as consecutive parts and in any case, projects/ then the work folder, _private or the setup's reserved folder
+    (`scelta`, relative to a vault) right after a folder that has a projects/ subfolder: a note of any checkout of a vault, not
+    only this one (ADR-002). The projects/<name> runs are text only; for a folder configured elsewhere the vault-like root is
+    checked on disk (os.path.isdir never raises), on the local path already accepted. O(p * r) time, p = parts, r = runs."""
+    parti = Path(percorso).parts
+    piegate = [x.casefold() for x in parti]
+    corse = [("projects", n) for n in server.percorsi.FISSE] + ([tuple(scelta.casefold().split("/"))] if scelta else [])
+    for corsa in corse:
+        for i in range(1, len(parti) - len(corsa) + 1):
+            if (tuple(piegate[i:i + len(corsa)]) == corsa
+                    and (corsa[0] == "projects" or os.path.isdir(os.path.join(*parti[:i], "projects")))):
+                return True
+    return False
 
 
 def _testo_percorso(percorso):
@@ -99,10 +112,11 @@ def percorso_del_piano(percorso, tag, vault):
     """(resolved plan file, its path relative to the repo root in POSIX form) when the file lies inside a repo of the
     project `tag` (its STATE `Repo:` lines), else ValueError([problem]). Never inside the vault's projects/ (notes, lavoro,
     the reserved folder: ADR-002), even through a link. A path not on a local disk is refused before touching the disk, like
-    every repo root. The deepest matching repo wins. RuntimeError(CONFIG_ILLEGGIBILE) as cartelle_riservate.
-    O(r) time and space, r = repos of the project. No path is ever echoed back."""
+    every repo root. The deepest matching repo wins. RuntimeError(CONFIG_ILLEGGIBILE) as leggi_riservata, the one reading of
+    config.json. O(r + k + p) time and space and k resolves, r = repos of the project, k = reserved folders, p = path parts.
+    No path is ever echoed back."""
     vault = Path(vault)
-    riservate = cartelle_riservate(vault)
+    riservate, scelta = leggi_riservata(vault)
     p = Path(os.path.abspath(percorso))
     if not server._percorso_locale(p):
         raise ValueError(["il piano deve stare su un disco di questo computer, non in rete"])
@@ -113,11 +127,14 @@ def percorso_del_piano(percorso, tag, vault):
     testo = _testo_percorso(file)
     progetti = {_testo_percorso(radice / "projects") for radice in (vault, vault.resolve())}
     if (any(testo == b or testo.startswith(b + os.sep) for b in progetti)
-            or server._in_cartella_riservata(file, vault, riservate)):
-        raise ValueError(["il piano non può stare in projects/ del vault: le note non sono piani (ADR-002)"])
+            or server._in_cartella_riservata(file, server._basi_riservate(vault, scelta))):
+        raise ValueError(["il piano non può stare in projects/ del vault né nella sua cartella riservata: le note non sono piani (ADR-002)"])
+    if _in_riservata_di_un_vault(p, scelta) or _in_riservata_di_un_vault(file, scelta):
+        raise ValueError(["il piano non può stare nelle note riservate di un vault (projects/ seguita da lavoro o da una "
+                          "cartella riservata): le note non sono piani (ADR-002)"])
     info = None
     if isinstance(tag, str) and server.TAG_NUOVO.fullmatch(tag) and tag.casefold() not in riservate:
-        info = server.progetti_indice(vault).get(tag.lower())
+        info = server.progetti_indice(vault, riservate).get(tag.lower())
     radici = []
     # percorsi_repo, as the launcher: nomi_repo drops roots, paths ending in `.` or `..` and twins. A root would make
     # the guard «any .md on the drive»; one reached through a link is caught once resolved.
@@ -233,7 +250,7 @@ def registra(testo_piano, tag, slug, vault, titolo=None, scadenza=None, giorni=N
 
     Returns {aggiunte, aggiornate (the lines written, without line end), legami ({id: [ids it depends on]}), avvisi, cambiato}.
     ValueError([problems]): nothing is written; each problem says the line (of the plan, or `docs/<file>:<line>`) and what to fix.
-    RuntimeError(message naming the file): config.json unreadable (cartelle_riservate), docs/piano.md or docs/obiettivi.md
+    RuntimeError(message naming the file): config.json unreadable (leggi_riservata), docs/piano.md or docs/obiettivi.md
     not UTF-8 or not readable, or a write that failed (the message says which file was already written).
     """
     vault = Path(vault)
@@ -241,12 +258,12 @@ def registra(testo_piano, tag, slug, vault, titolo=None, scadenza=None, giorni=N
     file_piano, file_obiettivi = vault / FILE[0], vault / FILE[1]
     if not (vault / "projects" / "INDEX.md").is_file() or not file_piano.is_file():
         raise ValueError(["il vault dello script non ha projects/INDEX.md o docs/piano.md"])
-    riservate = cartelle_riservate(vault)
+    riservate = leggi_riservata(vault)[0]
 
     # Arguments: the values are not echoed, the message says how to write them
     info = None
     if isinstance(tag, str) and server.TAG_NUOVO.fullmatch(tag):
-        info = server.progetti_indice(vault).get(tag.lower())
+        info = server.progetti_indice(vault, riservate).get(tag.lower())
     if info is None:
         problemi.append("--tag: non è un progetto di projects/INDEX.md: usa il nome della sua riga nell'INDEX")
     elif info.get("lavoro") or tag.casefold() in riservate:

@@ -109,6 +109,35 @@ class RepoNonTracciatoTest(unittest.TestCase):
         (riservata / "STATE.md").write_text(f"- **Repo:** {self.repo}\n")
         self.assertIn("mio-repo", self.msg())
 
+    def test_la_cartella_riservata_scelta_al_setup_non_si_legge(self):
+        # its STATE does not make the repo tracked: it is not read at all, in any case of the folder name
+        import json
+        (self.vault / "config.json").write_text(json.dumps({"moduli": {"riservata": {"cartella": "Projects/Secret"}}}), encoding="utf-8")
+        for nome in ("secret", "_" + "PRIVATE"):
+            riservata = self.vault / "projects" / nome
+            riservata.mkdir(parents=True)
+            (riservata / "STATE.md").write_text(f"- **Repo:** {self.repo}\n")
+        self.assertIn("mio-repo", self.msg())
+
+    def test_righe_repo_di_rete_non_si_toccano(self):
+        # the SessionStart hook resolves every Repo line: a network one (\\\\srv, //srv, a mapped Z:) is skipped on its text
+        import contextlib
+        import os
+        from unittest import mock
+        righe = ["\\\\srv\\share\\x", "//srv/share/y"] + (["Z:\\repo"] if os.name == "nt" else [])
+        (self.vault / "projects" / "progetto-a" / "STATE.md").write_text("".join(f"- **Repo:** {r}\n" for r in righe + [str(self.repo)]))
+        vero = Path.resolve
+
+        def solo_locale(percorso, *a, **k):
+            if str(percorso).startswith(("\\\\", "//")) or percorso.drive.upper() == "Z:":
+                raise AssertionError("disco di rete toccato: %s" % percorso)
+            return vero(percorso, *a, **k)
+
+        with contextlib.ExitStack() as pila:
+            pila.enter_context(mock.patch.object(Path, "resolve", solo_locale))
+            pila.enter_context(mock.patch.object(rnt.percorsi, "tipo_unita", side_effect=lambda u: 4 if u.upper() == "Z:" else 3))
+            self.assertTrue(rnt.tracciato(self.repo, self.vault.resolve()))
+
     def test_la_home_che_e_un_repo_git_tace(self):
         # Se ~ è un repo git, ogni cartella sotto ~ senza un repo suo ricadrebbe lì.
         sotto = self.repo / "sotto"

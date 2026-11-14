@@ -301,6 +301,17 @@ class VerifyTest(unittest.TestCase):
             code, out = run_verify(tmp)
             self.assertEqual((code, out.strip()), (0, 'OK'))
 
+    def test_cartella_riservata_scritta_con_altre_maiuscole_o_barre(self):
+        # the wizard accepts «Projects\\Confidential-Notes»: it is the folder projects/confidential-notes, whatever its case
+        for scelta, cartella in (('Projects/Confidential-Notes', 'confidential-notes'), ('projects\\\\confidential-notes', 'Confidential-Notes'),
+                                 ('/projects/confidential-notes/', 'confidential-notes')):
+            with self.subTest(scelta=scelta, cartella=cartella), tempfile.TemporaryDirectory() as tmp:
+                root = pathlib.Path(tmp)
+                make_vault(root, extra={'config.json': '{"moduli": {"riservata": {"attivo": true, "cartella": "%s"}}}' % scelta})
+                (root / 'projects' / cartella).mkdir()
+                code, out = run_verify(tmp)
+                self.assertEqual((code, out.strip()), (0, 'OK'))
+
     def test_config_annidato_troppo_non_esplode(self):
         with tempfile.TemporaryDirectory() as tmp:
             make_vault(pathlib.Path(tmp), extra={'config.json': '[' * 100000})

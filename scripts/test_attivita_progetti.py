@@ -1,15 +1,37 @@
 #!/usr/bin/env python3
 """Test di attivita(): solo i commit dopo la soglia, su tutti i branch, senza merge."""
+import contextlib
 import importlib.util
+import io
+import json
+import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 RADICE = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("attivita_progetti", RADICE / "scripts" / "attivita-progetti.py")
 ap = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ap)
+
+
+def senza_rete(*moduli):
+    """Path.exists/is_dir/is_file/resolve fail on a network path; Z: is a mapped share in the given copies of percorsi."""
+    pila = contextlib.ExitStack()
+    for nome in ("exists", "is_dir", "is_file", "resolve"):
+        def guardia(percorso, *a, _vero=getattr(Path, nome), **k):
+            if str(percorso).startswith(("\\\\", "//")) or percorso.drive.upper() == "Z:":
+                raise AssertionError("disco di rete toccato: %s" % percorso)
+            return _vero(percorso, *a, **k)
+        pila.enter_context(mock.patch.object(Path, nome, guardia))
+    for modulo in moduli:
+        pila.enter_context(mock.patch.object(modulo, "tipo_unita", side_effect=lambda unita: 4 if unita.upper() == "Z:" else 3))
+    return pila
+
+
+RIGHE_DI_RETE = ["\\\\srv\\share\\x", "//srv/share/y"] + (["Z:\\repo"] if os.name == "nt" else [])
 
 
 def git(repo, *args, data=None):
@@ -47,6 +69,7 @@ class AttivitaTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "scripts").mkdir()
             script = Path(shutil.copy(RADICE / "scripts" / "attivita-progetti.py", Path(d) / "scripts"))
+            shutil.copy(RADICE / "scripts" / "percorsi.py", Path(d) / "scripts")  # its reading of the reserved folder
             stato = Path(d) / "projects" / "p" / "STATE.md"
             stato.parent.mkdir(parents=True)
             stato.write_text("- **Repo:** %s\n" % self.repo, encoding="utf-8")
@@ -123,6 +146,63 @@ class PiuRepoTest(unittest.TestCase):
         out, _ = self.esegui(self.repo["backend"], self.repo["backend"])
         self.assertEqual(out.count("lavoro su backend"), 1)
         self.assertNotIn("[backend]", out)
+
+
+class ConfiniTest(unittest.TestCase):
+    """ADR-002: the work and reserved folders are never read, an unreadable config.json stops everything, a network repo is skipped."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.vault = Path(self._tmp.name) / "vault"
+        self.repo = Path(self._tmp.name) / "repo"
+        self.repo.mkdir()
+        git(self.repo, "init", "-q", "-b", "main")
+        git(self.repo, "commit", "-q", "--allow-empty", "-m", "segreto del cliente")
+
+    def stato(self, nome, *repo):
+        f = self.vault / "projects" / nome / "STATE.md"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("# %s\n" % nome + "".join("- **Repo:** %s\n" % r for r in repo), encoding="utf-8")
+
+    def esegui(self):
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(ap, "VAULT", self.vault), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            codice = ap.main(["--giorni", "1"])
+        return codice, out.getvalue(), err.getvalue()
+
+    def test_le_cartelle_riservate_non_si_leggono(self):
+        (self.vault / "projects").mkdir(parents=True)
+        (self.vault / "config.json").write_text(json.dumps({"moduli": {"riservata": {"cartella": "Projects/Secret"}}}), encoding="utf-8")
+        for nome in ("lavoro", "_" + "PRIVATE", "secret"):
+            self.stato(nome, self.repo)
+        codice, out, err = self.esegui()
+        self.assertEqual((codice, out, err), (0, "", ""))
+
+    def test_config_illeggibile_non_stampa_niente_ed_esce_con_1(self):
+        self.stato("alfa", self.repo)
+        for testo in (b"{rotto", b'{"moduli": {"riservata": {"attivo": true}}}'):
+            with self.subTest(testo=testo):
+                (self.vault / "config.json").write_bytes(testo)
+                with mock.patch.object(ap, "_git", side_effect=AssertionError("repo letto")):
+                    codice, out, err = self.esegui()
+                self.assertEqual((codice, out), (1, ""))
+                self.assertIn("config.json", err)
+
+    def test_repo_di_rete_saltato_prima_di_git(self):
+        self.stato("alfa", *RIGHE_DI_RETE, self.repo)
+        vero = ap._git
+
+        def solo_locale(repo, *args):
+            if str(repo).startswith(("\\\\", "//")) or Path(repo).drive.upper() == "Z:":
+                raise AssertionError("git su un percorso di rete: %s" % repo)
+            return vero(repo, *args)
+
+        with senza_rete(ap.percorsi), mock.patch.object(ap, "_git", side_effect=solo_locale):
+            codice, out, err = self.esegui()
+        self.assertEqual(codice, 0)
+        self.assertIn("segreto del cliente", out)
+        self.assertEqual(err.count("non su un disco di questo computer"), len(RIGHE_DI_RETE))
 
 
 class SenzaRepoTest(unittest.TestCase):

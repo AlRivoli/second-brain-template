@@ -172,5 +172,14 @@ class ScrittaTest(unittest.TestCase):
                 self.assertTrue(j.get("days"), nome)
 
 
+class LeggiConfigTest(unittest.TestCase):
+    def test_config_con_bom_o_annidato_troppo(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "config.json").write_text('{"etichetta": "x"}', encoding="utf-8-sig")  # a BOM from Notepad
+            self.assertEqual(ij.leggi_config(d), {"etichetta": "x"})
+            (Path(d) / "config.json").write_text("[" * 100000, encoding="utf-8")
+            self.assertEqual(ij.leggi_config(d), {})
+
+
 if __name__ == "__main__":
     unittest.main()

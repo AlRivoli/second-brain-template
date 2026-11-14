@@ -125,6 +125,32 @@ class VerifyTest(unittest.TestCase):
             self.assertIn('docs/obiettivi.md:1: avviso:', out)
             self.assertIn('OK', out)
 
+    def test_marcatori_non_validi_di_obiettivi_sono_avvisi(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), extra={'docs/obiettivi.md': '# Obiettivi\n- a: A giorni:xx\n'})
+            code, out = run_verify(tmp)
+            self.assertEqual(code, 0, out)
+            self.assertIn('docs/obiettivi.md:2: avviso: giorni:', out)
+            self.assertTrue(out.rstrip().endswith('OK'), out)
+
+    def test_piano_non_valido_in_config_e_un_avviso(self):
+        # also without plan, goals or Repo lines: the settings are checked on their own
+        senza_repo = GOOD_STATE.replace('- **Repo:** nessuno\n', '')
+        for state in (GOOD_STATE, senza_repo):
+            with self.subTest(repo=state is GOOD_STATE), tempfile.TemporaryDirectory() as tmp:
+                make_vault(pathlib.Path(tmp), state=state, extra={'config.json': '{"piano": {"ore_giorno": 0}}'})
+                code, out = run_verify(tmp)
+                self.assertEqual(code, 0, out)
+                self.assertIn('config.json: avviso: piano.ore_giorno', out)
+                self.assertTrue(out.rstrip().endswith('OK'), out)
+
+    def test_piano_valido_o_config_illeggibile_non_da_avvisi(self):
+        for testo in ('{"piano": {"ore_giorno": 8, "giorni_lavoro": ["lun", "sab"]}}', '{}', 'non json', '[]'):
+            with self.subTest(testo=testo), tempfile.TemporaryDirectory() as tmp:
+                make_vault(pathlib.Path(tmp), extra={'config.json': testo})
+                code, out = run_verify(tmp)
+                self.assertEqual((code, out.strip()), (0, 'OK'))
+
     def test_repo_doppi_fanno_fallire_verify(self):
         stato = GOOD_STATE.replace('- **Repo:** nessuno', '- **Repo:** C:\\a\\api\n- **Repo:** D:\\b\\api')
         with tempfile.TemporaryDirectory() as tmp:
@@ -264,6 +290,22 @@ class VerifyTest(unittest.TestCase):
             code, out = run_verify(tmp)
             self.assertEqual(code, 1)
             self.assertIn('altra-cartella', out)
+
+    def test_cartella_riservata_con_config_con_bom(self):
+        # a config.json saved by Notepad starts with a BOM: the reserved folder must still be found
+        cfg = '﻿{"moduli": {"riservata": {"attivo": true, "cartella": "projects/confidential-notes"}}}'
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            make_vault(root, extra={'config.json': cfg})
+            (root / 'projects' / 'confidential-notes').mkdir()
+            code, out = run_verify(tmp)
+            self.assertEqual((code, out.strip()), (0, 'OK'))
+
+    def test_config_annidato_troppo_non_esplode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), extra={'config.json': '[' * 100000})
+            code, out = run_verify(tmp)
+            self.assertEqual((code, out.strip()), (0, 'OK'))
 
     def test_vault_vuoto_non_esplode(self):
         with tempfile.TemporaryDirectory() as tmp:

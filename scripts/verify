@@ -4,6 +4,7 @@
 Uso: scripts/verify [RADICE_VAULT]
 Exit 0 se tutto passa, 1 se trova problemi. Stampa "file: problema" per ogni problema.
 Le dipendenze rotte e i `repo:` non validi di docs/piano.md e i problemi di docs/obiettivi.md sono avvisi ("file:riga: avviso: ..."): si stampano ma non cambiano l'exit.
+Anche le impostazioni `piano` di config.json non valide sono avvisi ("config.json: avviso: ..."): valgono i default.
 Un repo il cui nome (la cartella della riga Repo) non si può scrivere come marcatore `repo:` è un avviso.
 Due righe Repo con lo stesso nome nello STATE di un progetto sono invece un problema.
 Nessun modello, solo lettura dei file.
@@ -96,10 +97,10 @@ def check_projects(root, problems):
     projects_dir = root / 'projects'
     private_dirs = set(PRIVATE_DIRS)
     try:  # la cartella riservata scelta al setup (moduli.riservata.cartella), se sta dentro projects/
-        scelta = json.loads((root / 'config.json').read_text(encoding='utf-8'))['moduli']['riservata']['cartella']
+        scelta = json.loads((root / 'config.json').read_text(encoding='utf-8-sig'))['moduli']['riservata']['cartella']
         if scelta.replace('\\', '/').startswith('projects/') and scelta.count('/') == 1:
             private_dirs.add(scelta.split('/')[1])
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError):
         pass
     folders = []
     if projects_dir.exists():
@@ -324,14 +325,15 @@ def check_errori_ricorrenti(root, problems):
 
 
 def check_dipendenze(root, avvisi, problems, percorsi):
-    """I problemi di docs/piano.md (id doppio, dopo: rotto, ciclo, obiettivo: e repo: non validi) e di docs/obiettivi.md sono avvisi: non bloccano verify.
+    """I problemi di docs/piano.md (id doppio, dopo: rotto, ciclo, obiettivo: e repo: non validi), di docs/obiettivi.md e di config.json → piano sono avvisi: non bloccano verify.
 
     Fa eccezione un nome di repo doppio nello STATE di un progetto (`percorsi`, da check_projects): tocca l'allowlist dei repo, è un problema.
-    Il modulo viene sempre da accanto allo script, anche se la radice del vault è un'altra. Senza i due file e senza righe Repo non c'è nulla da controllare.
+    Il modulo viene sempre da accanto allo script, anche se la radice del vault è un'altra. Senza i tre file e senza righe Repo non c'è nulla da controllare.
     """
     piano = root / 'docs' / 'piano.md'
     file_obiettivi = root / 'docs' / 'obiettivi.md'
-    if not piano.is_file() and not file_obiettivi.is_file() and not any(percorsi.values()):
+    config = root / 'config.json'
+    if not piano.is_file() and not file_obiettivi.is_file() and not config.is_file() and not any(percorsi.values()):
         return
     # A missing or broken module skips this check with a warning: it never stops verify or changes its exit code.
     try:
@@ -349,6 +351,12 @@ def check_dipendenze(root, avvisi, problems, percorsi):
         avvisi.extend(f'projects/{progetto}/STATE.md: avviso: repo:{nome} non si può scrivere come marcatore: rinomina la cartella'
                       for nome in nomi if not re.fullmatch(dipendenze._REPO, nome))
         repo[progetto.lower()] = set(nomi)  # i tag del piano sono in minuscolo
+    if config.is_file():
+        try:  # config.json is the wizard's file: an unreadable one is not this check's business
+            impostazioni = json.loads(config.read_text(encoding='utf-8-sig'))
+        except (OSError, ValueError, RecursionError):  # RecursionError: JSON nested too deep
+            impostazioni = {}
+        avvisi.extend(f'config.json: avviso: {messaggio}' for messaggio in dipendenze.impostazioni_piano(impostazioni)[1])
     voci = dipendenze.leggi_voci(read(piano)) if piano.is_file() else []
     obiettivi = None
     if file_obiettivi.is_file():

@@ -592,7 +592,21 @@ path.arco.st-in_attesa, circle.arco.st-in_attesa { stroke: var(--todo); stroke-w
 g.obiettivo { cursor: pointer; outline: none; transition: opacity .2s; }
 .obiettivo-box { fill: var(--surface); stroke: var(--border); stroke-width: 1; }
 g.obiettivo.non-definito .obiettivo-box { stroke: var(--muted); stroke-dasharray: 4 3; }
+/* deadlines: at risk or past due also changes the outline, and the box says it in a bold word next to the date */
+g.obiettivo.a-rischio .obiettivo-box { stroke: var(--warning-edge); stroke-width: 1.5; }
+g.obiettivo.scaduto .obiettivo-box { stroke: var(--late); stroke-width: 1.5; }
+.obiettivo-rischio { font-weight: 600; fill: var(--pill-warning-ink); }
+.obiettivo.scaduto .obiettivo-rischio { fill: var(--late); }
 g.obiettivo:hover .obiettivo-box, g.obiettivo:focus-visible .obiettivo-box, g.obiettivo.scelto .obiettivo-box { stroke: var(--text); stroke-width: 2; }
+.obiettivo.rivelato { animation: appare .2s ease-out both; }
+@keyframes appare { from { opacity: 0; } }
+/* «+k altri» / «+k completati»: the folded goals of the band, one pill per group */
+.pastiglia { cursor: pointer; outline: none; }
+.pastiglia-box { fill: var(--surface); stroke: var(--control); stroke-width: 1; transition: fill .15s, stroke .15s; }   /* solid: dashed already means undefined or waiting */
+.pastiglia[aria-expanded="true"] .pastiglia-box { fill: var(--active); }
+.pastiglia:hover .pastiglia-box, .pastiglia:focus-visible .pastiglia-box { fill: var(--active); stroke: var(--text); stroke-width: 2; }
+.pastiglia-testo { font-size: 12px; font-weight: 500; fill: var(--muted); text-anchor: middle; }
+.pastiglia:hover .pastiglia-testo, .pastiglia:focus-visible .pastiglia-testo { fill: var(--text); }
 .obiettivo-titolo { font-size: 13px; font-weight: 500; fill: var(--text); }
 .obiettivo-sub { font-size: 11px; fill: var(--faint); }
 .obiettivo .arco, .obiettivo-traccia { fill: none; stroke-width: 6; }   /* below path.arco.st-in_attesa in specificity: waiting stays thin and dashed */
@@ -605,6 +619,8 @@ g.obiettivo:hover .obiettivo-box, g.obiettivo:focus-visible .obiettivo-box, g.ob
 .filo { stroke: var(--control); stroke-width: 1; }
 #mappa-dettaglio h2 { font-size: 14px; font-weight: 600; }
 #mappa-dettaglio .sub { font-weight: 400; margin: 0; }
+.scadenza-obiettivo { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; font-size: 14px; }
+.mappa-lista h3 .stato { margin-left: 8px; font-weight: 500; }
 .dove { display: flex; align-items: center; font-size: 12px; color: var(--muted); }
 .titolo-azione { font: 400 24px/1.2 var(--serif); letter-spacing: -0.01em; margin: 10px 0 8px; overflow-wrap: anywhere; }
 .titolo-dialogo { font: 400 18px/1.3 var(--serif); margin: 12px 0; overflow-wrap: anywhere; }
@@ -670,7 +686,7 @@ button.link:hover { text-decoration: underline; background: none; }
   .saluto { font-size: 30px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .nodo, .nodo.prossimo .alone, .sat-dentro { transition: none !important; animation: none !important; }
+  .nodo, .nodo.prossimo .alone, .sat-dentro, .obiettivo.rivelato { transition: none !important; animation: none !important; }
 }
 
 /* Componenti condivisi delle pagine secondarie (componenti.js) */

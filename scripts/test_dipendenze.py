@@ -3,6 +3,7 @@
 import importlib.util
 import time
 import unittest
+from datetime import date
 from pathlib import Path
 
 RADICE = Path(__file__).resolve().parent.parent
@@ -164,7 +165,7 @@ class LeggiProblemiTest(unittest.TestCase):
 class ObiettiviTest(unittest.TestCase):
     def test_leggi_obiettivi(self):
         o, p = d.leggi_obiettivi("# Obiettivi\n\n- harness: Harness per tutti i progetti\n- mappa: Mappa <con> \"obiettivi\" & repo\n")
-        self.assertEqual(list(o.items()), [("harness", "Harness per tutti i progetti"), ("mappa", "Mappa <con> \"obiettivi\" & repo")])
+        self.assertEqual([(k, v["titolo"]) for k, v in o.items()], [("harness", "Harness per tutti i progetti"), ("mappa", "Mappa <con> \"obiettivi\" & repo")])
         self.assertEqual(p, [])
 
     def test_leggi_obiettivi_problemi(self):
@@ -194,6 +195,171 @@ class ObiettiviTest(unittest.TestCase):
         self.assertEqual([r for r, _ in d.problemi(voci, {"mappa": "Mappa"})], [3])
         self.assertEqual(d.problemi(voci), [])
         self.assertIn("obiettivo:altro non è definito in docs/obiettivi.md: aggiungi `- altro: <titolo>`", d.problemi(voci, {})[1][1])
+
+
+    def test_obiettivo_formato_esteso(self):
+        o, p = d.leggi_obiettivi("- rel: Rilascio scadenza:2026-12-04 giorni:lun,mar,mer piano:docs/superpowers/plans/x.md\n- vec: Vecchio stile\n")
+        self.assertEqual(o["rel"]["titolo"], "Rilascio")
+        self.assertEqual(o["rel"]["scadenza"], date(2026, 12, 4))
+        self.assertEqual(o["rel"]["giorni"], frozenset({0, 1, 2}))
+        self.assertEqual(o["rel"]["piano"], "docs/superpowers/plans/x.md")
+        self.assertEqual(o["vec"], {"titolo": "Vecchio stile", "scadenza": None, "giorni": None, "piano": None})
+        self.assertEqual(p, [])
+
+    def test_obiettivo_giorni_tutti_e_marcatori_in_ordine_qualsiasi(self):
+        o, p = d.leggi_obiettivi("- a: A giorni:tutti scadenza:2026-12-05\n")
+        self.assertEqual((o["a"]["giorni"], o["a"]["scadenza"], p), (frozenset(range(7)), date(2026, 12, 5), []))
+
+    def test_obiettivo_marcatori_non_validi(self):
+        _, p = d.leggi_obiettivi("- a: A scadenza:2026-13-01\n- b: B giorni:lunedi\n- c: C piano:../x.md\n- e: E piano:C:/x.md\n")
+        self.assertEqual([r for r, _ in p], [1, 2, 3, 4])
+
+    def test_obiettivo_marcatore_non_valido_resta_definito_con_il_calendario_del_vault(self):
+        # a bad `giorni:` is a warning and falls back to the vault calendar: undefining the goal would also flag every task using it
+        o, p = d.leggi_obiettivi("- b: B scadenza:2026-12-04 giorni:\n")
+        self.assertIsNone(o["b"]["giorni"])
+        self.assertEqual(len(p), 1)
+        self.assertIn("giorni:", p[0][1])
+        # the scan stopped at `giorni:`, so the deadline before it is lost too: fail-open, so the warning names it
+        self.assertIsNone(o["b"]["scadenza"])
+        self.assertIn("non si leggono neanche `scadenza:`", p[0][1])
+
+    def test_obiettivo_piano_oltre_200_caratteri_non_vale(self):
+        self.assertEqual((d.percorso_piano_valido("x" * 200), d.percorso_piano_valido("x" * 201)), (True, False))
+
+    def test_obiettivo_piano_con_spazi_assoluto_o_risalita_e_un_avviso(self):
+        for valore in ("/etc/x.md", "a/../b.md", "a b.md", "C:\\x.md", "x" * 201):
+            with self.subTest(valore=valore):
+                o, p = d.leggi_obiettivi(f"- a: A piano:{valore}\n")
+                self.assertEqual([r for r, _ in p], [1])
+                self.assertIsNone(o.get("a", {}).get("piano"))  # 201 characters also make the title too long
+
+    def test_obiettivo_data_in_formato_compatto_non_vale(self):
+        o, p = d.leggi_obiettivi("- a: A scadenza:20261204\n")
+        self.assertEqual(([r for r, _ in p], o["a"]["scadenza"]), ([1], None))
+
+    def test_obiettivo_chiave_ripetuta_e_un_avviso(self):
+        o, p = d.leggi_obiettivi("- a: A scadenza:2026-12-01 scadenza:2026-12-04\n")
+        self.assertEqual((o["a"]["scadenza"], [r for r, _ in p]), (date(2026, 12, 4), [1]))
+        self.assertNotIn("data valida", p[0][1])
+
+    def test_obiettivo_solo_marcatori_e_senza_titolo(self):
+        o, p = d.leggi_obiettivi("- a: scadenza:2026-12-04\n")
+        self.assertEqual((o, p), ({}, [(1, "obiettivo:a senza titolo: scrivi `- a: titolo`")]))
+
+    def test_obiettivo_parola_piano_nel_titolo_non_e_un_avviso(self):
+        o, p = d.leggi_obiettivi("- a: Nuovo piano: rilascio\n")
+        self.assertEqual((o["a"]["titolo"], p), ("Nuovo piano: rilascio", []))
+
+
+class PianoTest(unittest.TestCase):
+    def test_ore_stima(self):
+        self.assertEqual((d.ore_stima("9h", 6), d.ore_stima("1,5g", 6), d.ore_stima(None, 6)), (9.0, 9.0, None))
+
+    def test_stima_ha_un_limite(self):
+        # at most 4 digits and 2 decimals: a 400-digit value would be float('inf') and break the date walk
+        for valore in ("9999h", "1,25g", "0.5h"):
+            self.assertEqual(d._valore("stima", valore), valore)
+        for valore in ("1" * 400 + "h", "10000h", "1,255g"):
+            with self.subTest(valore=valore[:12]):
+                self.assertIsNone(d._valore("stima", valore))
+        lungo = "stima:" + "1" * 400 + "h"
+        voci = d.leggi_voci("- [ ] a " + lungo + "\n")
+        self.assertNotIn("stima", voci[0]["marcatori"])  # it stays text, and the leftover is reported
+        self.assertTrue(any("non è un marcatore valido" in m for _, m in d.problemi(voci)))
+
+    def test_impostazioni_piano_default_e_errori(self):
+        self.assertEqual(d.impostazioni_piano({})[0], {"ore_giorno": 6.0, "giorni": frozenset({0, 1, 2, 3, 4})})
+        self.assertEqual(len(d.impostazioni_piano({"piano": {"ore_giorno": 30, "giorni_lavoro": ["xyz"]}})[1]), 2)
+
+    def test_impostazioni_piano_valide(self):
+        self.assertEqual(d.impostazioni_piano({"piano": {"ore_giorno": 7.5, "giorni_lavoro": ["sab", "dom"]}}),
+                         ({"ore_giorno": 7.5, "giorni": frozenset({5, 6})}, []))
+
+    def test_impostazioni_piano_tipi_sbagliati_usano_i_default(self):
+        default = {"ore_giorno": 6.0, "giorni": frozenset(range(5))}
+        for piano in ("x", {"ore_giorno": True}, {"ore_giorno": float("nan")}, {"ore_giorno": "6"}, {"giorni_lavoro": []},
+                      {"giorni_lavoro": "lun"}, {"ore_giorno": 0.5}):
+            with self.subTest(piano=piano):
+                impostazioni, trovati = d.impostazioni_piano({"piano": piano})
+                self.assertEqual((impostazioni, len(trovati)), (default, 1))
+        self.assertEqual(d.impostazioni_piano(None), (default, []))
+
+
+class DateObiettivoTest(unittest.TestCase):
+    def calcola(self, piano, scadenza, giorni, oggi, ore_giorno=6):
+        voci = d.leggi_voci(piano)
+        return d.date_obiettivo(voci, d.stati_derivati(voci), "r", scadenza, giorni, ore_giorno, oggi)
+
+    def test_date_catena_lun_ven(self):
+        # a(6h) -> b(12h) -> c(6h), scadenza ven 2026-12-04, oggi lun 2026-11-30, 6h/giorno, lun-ven
+        r = self.calcola("## A\n- [ ] a id:a stima:6h obiettivo:r\n- [ ] b id:b dopo:a stima:2g obiettivo:r\n- [ ] c dopo:b stima:6h obiettivo:r\n",
+                         date(2026, 12, 4), frozenset(range(5)), date(2026, 11, 30))
+        self.assertEqual([r["entro"][i] for i in range(3)], [date(2026, 12, 1), date(2026, 12, 3), date(2026, 12, 4)])
+        self.assertEqual((r["giorniNecessari"], r["giorniDisponibili"], r["aRischio"], r["scaduto"]), (4, 5, False, False))
+        self.assertEqual(r["senzaStima"], [])
+
+    def test_date_weekend_e_senza_stima(self):
+        # scadenza sab 2026-12-05: con lun-ven l'ultimo task è entro ven 4; con tutti i giorni entro sab 5; un task senza stima conta 0
+        piano = "- [ ] a id:a stima:6h obiettivo:r\n- [ ] b id:b dopo:a obiettivo:r\n- [ ] c dopo:b stima:6h obiettivo:r\n"
+        r = self.calcola(piano, date(2026, 12, 5), frozenset(range(5)), date(2026, 11, 30))
+        self.assertEqual([r["entro"][i] for i in range(3)], [date(2026, 12, 3), date(2026, 12, 3), date(2026, 12, 4)])
+        self.assertEqual((r["senzaStima"], r["giorniNecessari"]), ([1], 2))
+        r = self.calcola(piano, date(2026, 12, 5), frozenset(range(7)), date(2026, 11, 30))
+        self.assertEqual([r["entro"][i] for i in range(3)], [date(2026, 12, 4), date(2026, 12, 4), date(2026, 12, 5)])
+
+    def test_calendario_vuoto_vale_lun_ven(self):
+        r = self.calcola("- [ ] a stima:6h obiettivo:r\n", date(2026, 12, 5), frozenset(), date(2026, 11, 30))
+        self.assertEqual((r["entro"], r["giorniDisponibili"]), ({0: date(2026, 12, 4)}, 5))
+
+    def test_a_rischio_e_scaduto(self):
+        # catena da 4 giorni con 2 giorni disponibili → aRischio; scadenza ieri con task aperti → aRischio e scaduto
+        piano = ("- [ ] a id:a stima:1g obiettivo:r\n- [ ] b id:b dopo:a stima:1g obiettivo:r\n"
+                 "- [ ] c id:c dopo:b stima:1g obiettivo:r\n- [ ] d dopo:c stima:1g obiettivo:r\n")
+        r = self.calcola(piano, date(2026, 12, 4), frozenset(range(5)), date(2026, 12, 3))
+        self.assertEqual((r["giorniNecessari"], r["giorniDisponibili"], r["aRischio"], r["scaduto"]), (4, 2, True, False))
+        r = self.calcola(piano, date(2026, 12, 2), frozenset(range(5)), date(2026, 12, 3))
+        self.assertEqual((r["giorniDisponibili"], r["aRischio"], r["scaduto"]), (0, True, True))
+        r = self.calcola("- [ ] a obiettivo:r\n", date(2026, 12, 2), frozenset(range(5)), date(2026, 12, 3))
+        self.assertEqual((r["giorniNecessari"], r["aRischio"], r["scaduto"]), (0, True, True))
+        r = self.calcola("- [x] a stima:1g obiettivo:r\n", date(2026, 12, 2), frozenset(range(5)), date(2026, 12, 3))
+        self.assertEqual((r["entro"], r["aRischio"], r["scaduto"]), ({}, False, False))
+
+    def test_solo_task_aperti_dell_obiettivo_e_senza_errori(self):
+        # done, other goal, broken reference and cycle get no date; a done predecessor adds nothing to the tail
+        piano = ("- [x] f id:f stima:1g obiettivo:r\n- [ ] g dopo:f stima:6h obiettivo:r\n- [ ] h stima:6h obiettivo:altro\n"
+                 "- [ ] rotto dopo:zz stima:6h obiettivo:r\n- [ ] p id:p dopo:q stima:6h obiettivo:r\n- [ ] q id:q dopo:p stima:6h obiettivo:r\n")
+        r = self.calcola(piano, date(2026, 12, 4), frozenset(range(5)), date(2026, 11, 30))
+        self.assertEqual(r["entro"], {1: date(2026, 12, 4)})
+        self.assertEqual(r["giorniNecessari"], 1)
+
+    def test_coda_e_il_ramo_piu_lungo_e_gli_altri_obiettivi_non_contano(self):
+        # a -> b(6h) and a -> c(2g) -> x (other goal, 5g): a's tail is the longer branch inside the goal, 12h = 2 days
+        piano = ("- [ ] a id:a stima:6h obiettivo:r\n- [ ] b dopo:a stima:6h obiettivo:r\n- [ ] c id:c dopo:a stima:2g obiettivo:r\n"
+                 "- [ ] x dopo:c stima:5g obiettivo:altro\n")
+        r = self.calcola(piano, date(2026, 12, 4), frozenset(range(5)), date(2026, 11, 30))
+        self.assertEqual(r["entro"], {0: date(2026, 12, 2), 1: date(2026, 12, 4), 2: date(2026, 12, 4)})
+        self.assertEqual(r["giorniNecessari"], 3)
+
+    def test_arrotondamento_dei_decimali(self):
+        # 0.2h + (0.4h + 5.4h) is 6.000000000000001 in floating point: still one day, not two
+        piano = "- [ ] a id:a stima:0.2h obiettivo:r\n- [ ] b id:b dopo:a stima:0.4h obiettivo:r\n- [ ] c dopo:b stima:5.4h obiettivo:r\n"
+        r = self.calcola(piano, date(2026, 12, 4), frozenset(range(5)), date(2026, 11, 30))
+        self.assertEqual(r["giorniNecessari"], 1)
+
+    def test_catena_oltre_la_finestra_non_va_in_ciclo(self):
+        # 400 one-day tasks on a one-day-a-week calendar: more than the 366-week window, entro is clamped and the goal is at risk
+        n = 400
+        righe = [f"- [ ] t{i} id:t{i} stima:1g obiettivo:r" + (f" dopo:t{i - 1}" if i else "") for i in range(n)]
+        r = self.calcola("\n".join(righe) + "\n", date(2026, 12, 4), frozenset({4}), date(2026, 11, 30))
+        self.assertEqual(len(r["entro"]), n)
+        self.assertTrue(r["aRischio"])
+        self.assertEqual(r["entro"][n - 1], date(2026, 12, 4))
+        self.assertLessEqual(r["entro"][0], r["entro"][1])
+
+    def test_scadenza_vicina_al_primo_giorno_possibile(self):
+        r = self.calcola("- [ ] a id:a stima:1g obiettivo:r\n- [ ] b dopo:a stima:1g obiettivo:r\n", date(1, 1, 2), frozenset(range(7)), date(1, 1, 1))
+        self.assertEqual((r["entro"][0], r["entro"][1]), (date(1, 1, 1), date(1, 1, 2)))
 
 
 if __name__ == "__main__":

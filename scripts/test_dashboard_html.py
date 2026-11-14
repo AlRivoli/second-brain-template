@@ -120,6 +120,67 @@ class HtmlDashboard(unittest.TestCase):
         for atteso in ("stesso repo di un task in corso", "repo sconosciuto", "repo non indicato", "scegli_repo", "name: 'repo'", "Repo: "):
             self.assertIn(atteso, js)
 
+    def test_la_mappa_mostra_scadenze_rischio_e_fascia_comprimibile(self):
+        js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")
+        for atteso in ("'scade '", "'a rischio'", "'scaduto'", "'entro il '", "'senza stima'", " completati'", " altri'",
+                       "Le date ipotizzano che i task indipendenti procedano in parallelo.", "aria-expanded"):
+            self.assertIn(atteso, js, atteso)
+        # one folded goal reads «+1 altro» / «+1 completato», in the label too; more keep the plural
+        pastiglia = js[js.index("if (pastiglia) {"):js.index("const premi = ()")]
+        for atteso in ("piegati === 1", "(uno ? ' altro' : ' altri')", "(uno ? ' completato' : ' completati')",
+                       "(uno ? ' obiettivo' : ' obiettivi')", "(uno ? ': obiettivo' : ': obiettivi')"):
+            self.assertIn(atteso, pastiglia, atteso)
+        # a goal without a deadline shows no date and no «NaN»: every deadline read is guarded, the day counts are checked integers
+        self.assertEqual(js.count("giornoBreve(o.scadenza)"), 1)
+        self.assertIn("o.scadenza ? 'scade ' + giornoBreve(o.scadenza) : ''", js)
+        self.assertIn("Number.isInteger(o.giorniNecessari)", js)
+        # the computed date and «senza stima» are one helper, shared by the panel row and the list row
+        for riga in ("function rigaTask", "function rigaLista"):
+            corpo = js[js.index(riga):js.index("\n  }\n", js.index(riga))]
+            self.assertIn("segniScadenza(t)", corpo, riga)
+        # the fixed goal is never folded away, and the pills are not dimmed nor a pan start
+        self.assertIn("os.filter(o => o !== scelto)", js[js.index("function fascia"):js.index("function disegna")])
+        self.assertIn(".pastiglia", js[js.index("svg.addEventListener('pointerdown'"):js.index("svg.addEventListener('pointermove'")])
+        self.assertRegex(css, r"\.obiettivo\.a-rischio [^}]*stroke")
+        self.assertRegex(css, r"prefers-reduced-motion[^}]*\.obiettivo\.rivelato")
+
+    def test_la_fascia_degli_obiettivi_si_ripiega(self):
+        # fascia() runs alone in node, with stubs for the band state: what is drawn, in which order, and what each pill hides
+        import shutil, subprocess, tempfile
+        if not shutil.which("node"):
+            self.skipTest("node non c'è")
+        js = (D / "mappa.js").read_text(encoding="utf-8")
+        corpo = js[js.index("  function fascia"):js.index("  // ---- disegno ----")]
+        prova = ("let fissato = null, banda = { altri: false, completati: false }, rivela = null, V = [];"
+                 "const obiettiviVisibili = () => V, obiettivoPer = k => V.find(o => 'obiettivo:' + o.slug === k);"
+                 "eval(require('fs').readFileSync(process.argv[1], 'utf8'));"
+                 "const g = (slug, tot, fatti) => ({ slug, task: Array(tot).fill(0), conteggi: { fatti } });"
+                 "const vedi = c => fascia(c).map(v => v.o ? v.o.slug : '+' + v.pastiglia + ':' + v.k).join(' ');"
+                 "const out = {};"
+                 "V = [...Array(12)].map((_, i) => g('a' + i, 2, 1)).concat([g('vuoto', 0, 0), g('f1', 2, 2), g('f2', 1, 1)]);"
+                 "out.piegato = vedi(3);"
+                 "fissato = 'obiettivo:a11'; out.sceltoAperto = vedi(3);"
+                 "fissato = 'obiettivo:f2'; out.sceltoFinito = vedi(3); fissato = null;"
+                 "banda.completati = true; out.completatiAperti = vedi(3); banda.completati = false;"
+                 "banda.altri = true; out.altriAperti = vedi(3); banda.altri = false;"
+                 "V = [g('f1', 2, 2), g('f2', 1, 1)]; out.tuttiFatti = vedi(3);"
+                 "V = [g('vuoto', 0, 0)]; out.soloVuoto = vedi(3);"
+                 "console.log(JSON.stringify(out));")
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "fascia.js"
+            f.write_text(corpo, encoding="utf-8")
+            out = json.loads(subprocess.run(["node", "-e", prova, str(f)], capture_output=True, text=True, timeout=30, check=True).stdout)
+        self.assertEqual(out, {
+            # 3 columns, two rows: 6 slots, one kept for «+k completati», one for «+k altri»; a goal with no task is still open
+            "piegato": "a0 a1 a2 a3 +altri:9 +completati:2",
+            "sceltoAperto": "a0 a1 a2 a3 a11 +altri:8 +completati:2",   # the fixed goal is never folded
+            "sceltoFinito": "a0 a1 a2 a3 +altri:9 f2 +completati:1",
+            "completatiAperti": "a0 a1 a2 a3 +altri:9 f1 f2 +completati:0",   # each pill sits after its own group
+            "altriAperti": "a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 vuoto +altri:0 +completati:2",
+            "tuttiFatti": "+completati:2",
+            "soloVuoto": "vuoto",
+        })
+
     def test_in_ritardo_e_bloccato_resta_rosso(self):
         # a late task that waits is never the next action: the spec wants it flagged, and the grey of «in attesa» must not hide the red
         js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")

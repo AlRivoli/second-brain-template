@@ -29,6 +29,8 @@
   let pos = new Map();      // nome -> {x, y, r}
   let dimensione = '';
   let vista = { k: 1, x: 0, y: 0 };   // zoom e spostamento: si conservano a ogni ridisegno
+  let banda = { altri: false, completati: false };   // the goal band's folded groups, opened by their pill
+  let rivela = null;        // the group a pill just opened: its goals fade in once
 
   const $ = id => document.getElementById(id);
   function h(tag, classe, figli, attr) {
@@ -94,6 +96,20 @@
   function giornoBreve(iso) {
     return new Date(iso + 'T12:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'short' }).replace('.', '');
   }
+  // A goal's deadline in words, the same on the box, in the panel and in the list. Empty without a deadline: never a blank date.
+  // `aRischio` is also true when `scaduto`, so one word and «scaduto» wins.
+  const scade = o => o.scadenza ? 'scade ' + giornoBreve(o.scadenza) : '';
+  const rischio = o => !o.scadenza ? '' : o.scaduto ? 'scaduto' : o.aRischio ? 'a rischio' : '';
+  const etichettaRischio = o => rischio(o) ? h('span', 'stato ' + (o.scaduto ? 'errore' : 'attenzione'), [rischio(o)]) : null;
+  const PARALLELO = 'Le date ipotizzano che i task indipendenti procedano in parallelo.';
+  // A row's computed due date and missing estimate, the same in the panel and in the list. A hand-written date is shown by the
+  // row itself (the server copies it into `entro`), so «entro il» only for a computed one; once past it says so in words, not only red.
+  function segniScadenza(t) {
+    return [
+      t.entroCalcolato && t.entro ? h('span', 'sub' + (t.ritardo ? ' ritardo' : ''), [(t.ritardo ? 'in ritardo, ' : '') + 'entro il ' + giornoBreve(t.entro)]) : null,
+      t.senzaStima ? h('span', 'sub', ['senza stima']) : null,
+    ];
+  }
   // What a task waits for, in words: one line per blocker (or the error), the same in the panel and in the list.
   const bloccante = (a, n) => a.chi === 'te' ? 'te — ' + a.vista : a.vista + (a.nodo !== n.nome ? ' · ' + a.nodo : '');
   // A late task that is blocked is never the next action, so the late signal travels with the reason instead.
@@ -145,6 +161,11 @@
     const obiettivoDi = { 0: 'club', 5: 'club', 13: 'club', 2: 'radar' };
     const task = nomi.map((testo, i) => ({ data: '2026-11-' + String(10 + i).padStart(2, '0'), testo, vista: testo, stato: stati[i], ritardo: i === 3,
       id: null, chi: null, derivato: stati[i] === 'da_fare' ? 'pronto' : stati[i], errore: null, mancanti: [], aspetta: [], obiettivo: obiettivoDi[i] || null, ...extra[i] }));
+    // deadlines: a computed date has no hand-written one; a ready task past its computed date, one without an estimate, a goal all done
+    Object.assign(task[5], { data: null, stima: null, entro: '2026-11-24', entroCalcolato: true, senzaStima: true });
+    Object.assign(task[7], { data: null, stima: 3, entro: '2026-11-04', entroCalcolato: true, ritardo: true, obiettivo: 'dominio' });
+    Object.assign(task[8], { data: null, stima: 6, entro: '2026-11-05', entroCalcolato: true, obiettivo: 'dominio' });
+    task[12].obiettivo = task[14].obiettivo = 'voto';
     const nodi = [{ nome: 'Prova piena', tipo: 'progetto', priorita: 'alta', haCartella: true, task },
       { nome: 'linkedin', tipo: 'argomento', priorita: null, haCartella: true, task: [{ data: '2026-11-12', testo: 'Pubblicare 6 bozze', vista: 'Pubblicare 6 bozze', stato: 'da_fare', ritardo: false, id: 'bozze-li', chi: null, derivato: 'pronto', errore: null, mancanti: [], aspetta: [], obiettivo: 'club' }] }];
     // repos, as the server sends them: valid names (duplicates kept), unknown ones apart, the same-repo warning only on ready tasks
@@ -163,13 +184,22 @@
       conRepo(9, 'Aggiornare i testi del sito', 'da_fare', { stessoRepo: ['sito'] }),
     ] });
     // the same shape the server builds: task copies with their node, counts by visual state
-    const obiettivo = (slug, titolo, definito) => {
+    const obiettivo = (slug, titolo, definito, scadenze) => {
       const ts = nodi.flatMap(n => n.task.filter(t => t.obiettivo === slug).map(t => ({ ...t, nodo: n.nome })));
       const quanti = st => ts.filter(t => statoVisivo(t) === st).length;
-      return { slug, titolo, definito, progetti: [...new Set(ts.map(t => t.nodo))], task: ts, conteggi: { pronti: quanti('pronto'), in_corso: quanti('in_corso'), in_attesa: quanti('in_attesa'), fatti: quanti('fatto') } };
+      return { slug, titolo, definito, progetti: [...new Set(ts.map(t => t.nodo))], task: ts, conteggi: { pronti: quanti('pronto'), in_corso: quanti('in_corso'), in_attesa: quanti('in_attesa'), fatti: quanti('fatto') },
+        scadenza: null, giorniNecessari: null, giorniDisponibili: null, aRischio: false, scaduto: false, piano: null, ...scadenze };
     };
+    // enough goals to fold the band past two rows at any width; some with a safe deadline, the others without one
+    const riempitivi = ['Sito nuovo online', 'Newsletter mensile', 'Corso per i soci', 'Bilancio in ordine', 'App per Android', 'Archivio delle foto',
+      'Guida per i volontari', 'Calendario condiviso', 'Backup automatici', 'Modulo di iscrizione', 'Pagina dei contatti', 'Report trimestrale']
+      .map((titolo, i) => obiettivo('extra-' + i, titolo, true, i % 3 ? {} : { scadenza: '2027-0' + (1 + i / 3) + '-15', giorniNecessari: 0, giorniDisponibili: 40 + i }));
     return {
-      nodi, obiettivi: [obiettivo('club', 'Aprire ai primi Club <beta> & "amici" 🚀', true), obiettivo('linkedin', 'Pubblicare con costanza', true), obiettivo('radar', 'radar', false)],
+      nodi, obiettivi: [
+        obiettivo('club', 'Aprire ai primi Club <beta> & "amici" 🚀', true, { scadenza: '2026-11-27', giorniNecessari: 9, giorniDisponibili: 6, aRischio: true, piano: 'docs/piani/club.md' }),
+        obiettivo('linkedin', 'Pubblicare con costanza', true), obiettivo('radar', 'radar', false),
+        obiettivo('dominio', 'Dominio rinnovato', true, { scadenza: '2026-11-06', giorniNecessari: 2, giorniDisponibili: 0, aRischio: true, scaduto: true }),
+        obiettivo('voto', 'Votazioni sicure', true, { scadenza: '2026-11-30', giorniNecessari: 0, giorniDisponibili: 13 }), ...riempitivi],
       prossima: { nodo: 'Prova piena', ...task[0], motivo: 'in corso' }, conteggi: { da_fare: 11, in_corso: 2, in_ritardo: 1, pronti: 6, in_attesa: 5 },
     };
   }
@@ -265,7 +295,7 @@
     }, { passive: false });
     svg.addEventListener('pointerdown', e => {
       if (e.button > 0) return;
-      const sfondo = !e.target.closest('.nodo, .sat, .azione, .obiettivo');
+      const sfondo = !e.target.closest('.nodo, .sat, .azione, .obiettivo, .pastiglia');
       if (!punti.size) { trascinato = false; spostato = 0; daSfondo = sfondo; }
       if (!punti.size && !sfondo) return;   // un clic su un nodo resta un clic
       punti.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -313,6 +343,21 @@
     return dati.nodi.filter(n => filtro === 'progetti' ? n.tipo === 'progetto' : filtro === 'argomenti' ? n.tipo === 'argomento' : filtro === 'aperti' ? aperti(n) > 0 : toccati ? toccati.has(n.nome) : true);
   }
   const obiettiviVisibili = () => ['tutto', 'aperti', 'obiettivi'].includes(filtro) ? obiettiviDi() : [];
+  // The goal band as drawn: open goals in at most two rows, the rest behind «+k altri»; goals with every task done behind
+  // «+k completati». A pill opens and closes its group. The fixed goal is never folded away, so selecting a goal reveals it.
+  // Returns the slots in order: open goals, «+k altri», done goals, «+k completati» (each pill closes its own group). O(G) time and space.
+  function fascia(colonne) {
+    const scelto = obiettivoPer(fissato), finito = o => o.task.length > 0 && o.conteggi.fatti === o.task.length;   // no task is not done
+    const tutti = obiettiviVisibili(), aperti = tutti.filter(o => !finito(o)), finiti = tutti.filter(finito);
+    const posto = Math.max(1, 2 * colonne - (finiti.length ? 1 : 0));   // two rows, one slot kept for «+k completati»
+    const pieghe = [['altri', aperti.length > posto ? aperti.slice(posto - 1) : []], ['completati', finiti]];   // «+k altri» takes a slot too
+    const nascosti = new Set(pieghe.flatMap(([g, os]) => banda[g] ? [] : os.filter(o => o !== scelto)));
+    const nuovi = new Set(pieghe.flatMap(([g, os]) => g === rivela ? os : []));
+    const mostra = os => os.filter(o => !nascosti.has(o)).map(o => ({ o, rivelato: nuovi.has(o) }));
+    // an open group keeps its pill to close it; a folded one shows it only if it hides something
+    const pastiglia = ([g, os]) => os.length && (banda[g] || os.some(o => nascosti.has(o))) ? [{ pastiglia: g, k: os.filter(o => nascosti.has(o)).length }] : [];
+    return [...mostra(aperti), ...pastiglia(pieghe[0]), ...mostra(finiti), ...pastiglia(pieghe[1])];
+  }
 
   // ---- disegno ----
   function disegna() {
@@ -331,10 +376,12 @@
     const mondo = s('g', { id: 'mappa-mondo' });   // tutto ciò che si zooma: nodi e satelliti
     svg.appendChild(mondo);
     const prossimo = dati.prossima && dati.prossima.nodo;
-    // Goal band under the header: rounded boxes in rows, as many per row as the width allows; the nodes are laid out below it
-    const obiettivi = obiettiviVisibili(), OB = { h: 58, gap: 12, min: 150, max: 220 };
+    // Goal band under the header: rounded boxes in rows, as many per row as the width allows; the nodes are laid out below the
+    // rows actually drawn (folded goals take no room). A deadline adds a line to every box, so the rows stay even.
+    const OB = { gap: 12, min: 150, max: 220 };
     const testa = document.querySelector('.mappa-testa'), y0 = 26 + (testa ? testa.offsetHeight : 36);
-    const colonne = Math.max(1, Math.floor((W - 40 + OB.gap) / (OB.min + OB.gap))), k = Math.min(obiettivi.length, colonne);
+    const colonne = Math.max(1, Math.floor((W - 40 + OB.gap) / (OB.min + OB.gap))), obiettivi = fascia(colonne), k = Math.min(obiettivi.length, colonne);
+    OB.h = obiettivi.some(v => v.o && v.o.scadenza) ? 74 : 58;
     const largo = k ? Math.min(OB.max, (W - 40 - (k - 1) * OB.gap) / k) : 0, x0 = (W - k * largo - (k - 1) * OB.gap) / 2;
     const fondoFascia = y0 + Math.ceil(obiettivi.length / colonne) * (OB.h + OB.gap) - OB.gap;
     const strato = s('g', { id: 'mappa-obiettivi' });   // first child of the world: the goal lines run under the nodes
@@ -379,15 +426,35 @@
       mondo.appendChild(G);
     }
     const linee = [], scatole = [];
-    obiettivi.forEach((o, i) => {
+    obiettivi.forEach(({ o, rivelato, pastiglia, k: piegati }, i) => {
       const x = x0 + (i % colonne) * (largo + OB.gap), y = y0 + Math.floor(i / colonne) * (OB.h + OB.gap), ax = x + largo / 2, ay = y + OB.h;
+      if (pastiglia) {   // «+k altri» / «+k completati»: a button that opens its group, and closes it again
+        const aperta = banda[pastiglia], uno = !aperta && piegati === 1;   // «+1 altro», «+1 completato»: singular for one
+        const testo = aperta ? (pastiglia === 'altri' ? 'nascondi gli altri' : 'nascondi i completati') : '+' + piegati + (pastiglia === 'altri' ? (uno ? ' altro' : ' altri') : (uno ? ' completato' : ' completati'));
+        const P = s('g', { class: 'pastiglia', tabindex: 0, role: 'button', 'aria-expanded': String(aperta), 'data-pastiglia': pastiglia,
+          'aria-label': testo + (pastiglia === 'altri' ? (uno ? ' obiettivo' : ' obiettivi') : (uno ? ': obiettivo' : ': obiettivi') + ' con tutti i task fatti') });   // starts with the visible words, so voice control finds it
+        P.append(s('title', {}, [aperta ? testo : 'mostra ' + testo.slice(1)]), s('rect', { class: 'pastiglia-box', x, y: y + (OB.h - 32) / 2, width: largo, height: 32, rx: 16 }),
+          s('text', { class: 'pastiglia-testo', x: ax, y: y + OB.h / 2, dy: '0.35em' }, [testo]));
+        const premi = () => {
+          banda[pastiglia] = !aperta; rivela = aperta ? null : pastiglia;
+          disegna();
+          const nuova = document.querySelector('#mappa-obiettivi [data-pastiglia="' + pastiglia + '"]');   // the redraw replaced the pressed pill
+          if (nuova) nuova.focus();
+        };
+        P.addEventListener('click', premi);
+        P.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); premi(); } });
+        scatole.push(P);
+        return;
+      }
       const sue = o.progetti.filter(nome => pos.has(nome)).map(nome => {   // a node hidden by the filter gets no line: the panel still lists its steps
         const p = pos.get(nome), d = Math.hypot(ax - p.x, ay - p.y) || 1;
         return s('line', { class: 'obiettivo-linea', x1: ax.toFixed(1), y1: ay.toFixed(1), x2: (p.x + (ax - p.x) / d * (p.r + 6)).toFixed(1), y2: (p.y + (ay - p.y) / d * (p.r + 6)).toFixed(1) });
       });
       const c = o.conteggi, tot = c.fatti + c.in_corso + c.pronti + c.in_attesa;
-      const etichetta = o.titolo + ', obiettivo: ' + contoObiettivo(o) + (o.definito ? '' : ', non definito');
-      const G = s('g', { class: 'obiettivo' + (o.definito ? '' : ' non-definito'), tabindex: 0, role: 'button', 'aria-label': etichetta });
+      const scadenza = scade(o), stato = rischio(o);
+      const etichetta = o.titolo + ', obiettivo: ' + contoObiettivo(o) + (o.definito ? '' : ', non definito') + (scadenza ? ', ' + scadenza : '') + (stato ? ', ' + stato : '');
+      const G = s('g', { class: 'obiettivo' + (o.definito ? '' : ' non-definito') + (stato === 'scaduto' ? ' scaduto' : stato ? ' a-rischio' : '') + (rivelato ? ' rivelato' : ''),
+        tabindex: 0, role: 'button', 'aria-label': etichetta });
       G.append(s('title', {}, [etichetta]), s('rect', { class: 'obiettivo-box', x, y, width: largo, height: OB.h, rx: 10 }),
         s('text', { class: 'obiettivo-titolo', x: x + 12, y: y + 21 }, [taglia(o.titolo, Math.floor((largo - 24) / 6.3))]));
       // progress: done, in progress, ready, waiting, with the strokes of the node rings (waiting dashed); the line below says it in words
@@ -401,12 +468,15 @@
         da = a;
       }
       G.append(s('text', { class: 'obiettivo-sub', x: x + 12, y: y + 50 }, [(o.definito ? '' : 'non definito · ') + (tot ? c.fatti + ' di ' + tot + ' fatti' : 'nessun passo')]));
+      // the risk is a word in bold next to the date, and the outline changes too: never colour alone
+      if (scadenza) G.append(s('text', { class: 'obiettivo-sub', x: x + 12, y: y + 66 }, [scadenza, ...(stato ? [s('tspan', { class: 'obiettivo-rischio' }, [' · ' + stato])] : [])]));
       G.addEventListener('click', () => scegliObiettivo(o.slug));
       G.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); scegliObiettivo(o.slug); } });
       obiettiviSvg.set(o.slug, { G, linee: sue });
       linee.push(...sue); scatole.push(G);
     });
     strato.append(...linee, ...scatole);
+    rivela = null;   // the fade-in plays once, not on every redraw
     mondo.appendChild(s('g', { id: 'mappa-dipendenze' }));  // the thread of the selected waiting task, under the satellites
     mondo.appendChild(s('g', { id: 'mappa-satelliti' }));   // sempre ultimo: sta sopra tutti i nodi
     limita(); applicaVista();
@@ -534,7 +604,10 @@
     disegnaSatelliti(aperto);
   }
   function scegli(nome) { if (fissato !== nome) filtroRepo = null; fissato = nome; selezione = null; apri(nome); pannello(); }
-  function scegliObiettivo(slug) { fissato = PREFISSO_OBIETTIVO + slug; selezione = null; apri(null); pannello(); }
+  function scegliObiettivo(slug) {
+    fissato = PREFISSO_OBIETTIVO + slug; selezione = null; apri(null); pannello();
+    if (!obiettiviSvg.has(slug)) disegna();   // a folded goal: the band always draws the fixed one
+  }
   // fissa il nodo, seleziona il task e porta il pannello su di lui: la lista dei task può essere più lunga del pannello
   function scegliTask(nome, t) {
     if (fissato !== nome || (filtroRepo && !tocca(t, filtroRepo.repo))) filtroRepo = null;   // a task the filter hides could not be scrolled to
@@ -550,6 +623,7 @@
     return h('li', 'task-lista st-' + statoVisivo(t) + (t.derivato === 'errore' ? ' errore' : ''), [
       h('i', 'punto st-' + statoVisivo(t)), bottone(t.vista, 'link' + (t.ritardo ? ' ritardo' : ''), () => { scegliTask(n.nome, t); $('mappa-dettaglio').scrollIntoView({ block: 'nearest' }); }),
       h('span', 'sub', [NOME_VISIVO[statoVisivo(t)] + (t.data ? ' · ' + giornoBreve(t.data) : '') + (conNodo ? ' · ' + n.nome : '')]),
+      ...segniScadenza(t),
       ...motivi(t, n).map(m => h('span', 'sub motivo', [m])),
       ...segniRepo(t),
     ]);
@@ -559,7 +633,7 @@
     if (!ul || !dati) return;
     const daMostrare = ts => filtro === 'aperti' ? ts.filter(t => t.stato !== 'fatto') : ts;
     const obiettivi = obiettiviVisibili().map(o => h('li', '', [
-      h('h3', '', [o.titolo, h('span', 'tipo-nodo', [o.definito ? 'obiettivo' : 'obiettivo non definito']), h('span', 'sub', [contoObiettivo(o)])]),
+      h('h3', '', [o.titolo, h('span', 'tipo-nodo', [o.definito ? 'obiettivo' : 'obiettivo non definito']), h('span', 'sub', [contoObiettivo(o) + (scade(o) ? ' · ' + scade(o) : '')]), etichettaRischio(o)]),
       ...(o.task.length ? gruppi(daMostrare(o.task), t => rigaLista(nodoPer(t.nodo), t, true), 'h4') : [h('p', 'vuoto', [NESSUN_PASSO])]),
     ]));
     const senza = filtro === 'obiettivi' && !obiettiviDi().length ? [h('li', 'vuoto', [NESSUN_OBIETTIVO])] : [];
@@ -583,7 +657,7 @@
     const sel = selezione && selezione.testo === t.testo && selezione.data === t.data;
     const vis = statoVisivo(t), tuo = t.chi === 'te' && (t.derivato === 'pronto' || t.derivato === 'in_corso');
     const li = h('li', 'task st-' + vis + (t.derivato === 'incoerente' ? ' incoerente' : '') + (t.derivato === 'errore' ? ' errore' : '') + (sel ? ' scelto' : ''), [
-      h('span', 'task-testo' + (t.ritardo ? ' ritardo' : ''), [h('i', 'punto st-' + vis), t.vista, t.data ? h('span', 'sub', [' ' + (t.ritardo ? 'dal ' : '') + giornoBreve(t.data)]) : null]),
+      h('span', 'task-testo' + (t.ritardo ? ' ritardo' : ''), [h('i', 'punto st-' + vis), t.vista, t.data ? h('span', 'sub', [' ' + (t.ritardo ? 'dal ' : '') + giornoBreve(t.data)]) : null, ...segniScadenza(t)]),
       conNodo ? h('span', 'sub', [n.nome]) : null,
       ...motivi(t, n).map(m => h('span', 'sub motivo', [m])),
       ...segniRepo(t, !conNodo && !!repoFiltrato(n)),
@@ -637,6 +711,14 @@
     return [
       h('h2', '', [o.titolo, h('span', 'sub', ['obiettivo' + (o.progetti.length ? ' · ' + o.progetti.join(', ') : '')])]),
       o.task.length ? h('p', 'sub conto-nodo', [contoObiettivo(o)]) : null,
+      // the deadline lines only with a deadline: the day counts are checked integers, so an older server never prints «NaN»
+      ...(o.scadenza ? [
+        h('p', 'scadenza-obiettivo', [scade(o), etichettaRischio(o)]),
+        Number.isInteger(o.giorniNecessari) && Number.isInteger(o.giorniDisponibili) ? h('p', 'sub', [
+          (o.giorniNecessari === 1 ? 'serve 1 giorno' : 'servono ' + o.giorniNecessari + ' giorni') + ', ' + (o.giorniDisponibili === 1 ? 'ne resta 1' : 'ne restano ' + o.giorniDisponibili)]) : null,
+        h('p', 'sub', [PARALLELO]),
+      ] : []),
+      o.piano ? h('p', 'sub', ['Piano: ', h('span', 'repo', [o.piano])]) : null,   // a path in the project's repo, shown as text only
       o.definito ? null : h('p', 'sub', ['Obiettivo non definito. Aggiungilo in docs/obiettivi.md con la riga «- ' + o.slug + ': <titolo>».']),
       ...(o.task.length ? gruppi(o.task, t => rigaTask(nodoPer(t.nodo), t, true), 'h3') : [h('p', 'vuoto', [NESSUN_PASSO])]),
       h('div', 'riga-azioni', [bottone('Torna alla prossima azione', '', deseleziona)]),

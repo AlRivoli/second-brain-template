@@ -73,6 +73,12 @@ class ModuliAttiviTest(unittest.TestCase):
             (Path(d) / "config.json").write_text("{ no", encoding="utf-8")
             self.assertTrue(all(server.moduli_attivi(d).values()))
 
+    def test_config_json_valido_ma_non_un_oggetto_come_assente(self):
+        for testo in ("[1, 2]", "\"moduli\"", "3", "null"):
+            with self.subTest(testo=testo), tempfile.TemporaryDirectory() as d:
+                (Path(d) / "config.json").write_text(testo, encoding="utf-8")
+                self.assertTrue(all(server.moduli_attivi(d).values()))
+
 
 class PagineDeiModuliTest(unittest.TestCase):
     def test_le_pagine_dei_moduli_dichiarano_a_quale_modulo_appartengono(self):

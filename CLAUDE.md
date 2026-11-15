@@ -27,6 +27,7 @@ Run them from the vault root. Python 3.9 or later; on Windows write `py -3` in p
 
 | Command | What it does |
 |---|---|
+| `python3 scripts/check` | The single check before a commit or a pull request: `verify`, ruff, both test suites, gitleaks. Stops at the first red step and names it |
 | `python3 scripts/verify` | Checks the vault rules (STATE, INDEX, links, README). Must print `OK` |
 | `python3 -m unittest discover -s scripts -p "test_*.py"` | Tests of the scripts, the dashboard and the hooks, about a minute |
 | `python3 -m unittest discover -s tests` | Tests of the wizard, the prerequisites check and the jobs |

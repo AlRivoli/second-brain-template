@@ -221,5 +221,23 @@ class DoctorHookTest(unittest.TestCase):
             self.assertEqual(doctor.INSTALLA["hook"][sistema], "git config core.hooksPath scripts/hooks")
 
 
+
+class DoctorRuffTest(unittest.TestCase):
+    """ruff is a maintainer tool run by scripts/check: optional here, pinned to the version CI uses."""
+
+    def test_ruff_is_optional_so_ci_and_a_fresh_clone_do_not_fail(self):
+        checks = {key: required for key, required, _ in doctor.controlli(RADICE, ci=True)}
+        self.assertIs(checks["ruff"], False)
+
+    def test_install_command_pins_the_version(self):
+        for system in ("macos", "linux", "windows"):
+            self.assertIn("ruff==" + doctor.RUFF_VERSION, doctor.INSTALLA["ruff"][system])
+
+    def test_version_matches_the_ci_lint_job(self):
+        ci = (RADICE / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        lint_job = ci.split("astral-sh/ruff-action@", 1)[1].split("\n  secrets:", 1)[0]
+        self.assertIn('version: "%s"' % doctor.RUFF_VERSION, lint_job,
+                      "bump RUFF_VERSION in doctor.py and the ruff version and checksum in ci.yml together")
+
 if __name__ == "__main__":
     unittest.main()

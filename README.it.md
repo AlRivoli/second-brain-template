@@ -171,6 +171,7 @@ Il testo di una novità non è fidato: ogni titolo passa da `content-guard` (sch
 
 ## Controlli
 
+- `python3 scripts/check` è il controllo unico da lanciare prima di un commit o di una pull request: `scripts/verify`, il linter ([ruff](https://docs.astral.sh/ruff/), regole in `ruff.toml`), i test degli script, i test del template e una scansione gitleaks della cartella. Si ferma al primo passo rosso e dice quale. Servono ruff e gitleaks: `doctor.py` li elenca come facoltativi e stampa il comando per installarli, con la versione di ruff usata dalla CI.
 - `python3 scripts/verify` controlla le regole del vault: STATE corti, `INDEX` coerente, riga `Harness` valida dove c'è, link validi, che questo README citi ogni job e ogni comando, e il registro `scaffold/` se ce l'hai. Lancialo dopo ogni modifica a uno STATE o all'indice; `/chiudi-giornata` lo lancia per te.
 - `python3 doctor.py` controlla Python, git, Claude Code, `verify` e ciò che le tue scelte richiedono (Ollama acceso, ogni modello locale scaricato, RAM sufficiente, n8n se l'hai scelto). `--ci` controlla solo il necessario.
 - Controllo dei segreti: `scripts/hooks/pre-commit` lancia gitleaks su ciò che stai per committare e blocca il commit se trova un segreto. Si attiva una volta per clone con `git config core.hooksPath scripts/hooks`; serve [gitleaks](https://github.com/gitleaks/gitleaks) installato (`doctor.py` mostra come). `doctor.py` dice anche quando l'hook non è attivo in questo clone: un clone o un worktree nuovo committa senza questi controlli finché non lanci quel comando.

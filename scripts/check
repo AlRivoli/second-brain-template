@@ -5,10 +5,13 @@ Usage: python3 scripts/check
 Runs, in order: the vault rules (scripts/verify), the linter (ruff), the script tests, the template tests,
 the secret scan (gitleaks). It stops at the first red step, says which one, and exits with that step's code.
 
+The secret scan reads the git history, like the CI job: files git ignores (.env, config.json, private notes, inbox clips)
+are never committed, so they must not turn the check red. Staged changes are scanned by the pre-commit hook.
 A missing ruff or gitleaks is a failure, not a skip: a check that does not run protects nothing.
 `python3 doctor.py` says how to install them.
 The pre-commit hook stays lighter on purpose (tests only when code is staged), so the nightly notes commit never blocks.
 """
+import os
 import shutil
 import subprocess
 import sys
@@ -21,15 +24,23 @@ STEPS = [
     ("lint", ["ruff", "check", "."]),
     ("script tests", PY + ["-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"]),
     ("template tests", PY + ["-m", "unittest", "discover", "-s", "tests"]),
-    ("secret scan", ["gitleaks", "dir", ".", "--redact", "--no-banner"]),
+    # -v names the file and line of a finding; --redact keeps the secret itself out of the output.
+    ("secret scan", ["gitleaks", "git", "--redact", "--no-banner", "-v", "."]),
 ]
 
 
 def run(steps, cwd=ROOT):
+    # Windows looks in the current folder before PATH: a ruff.cmd or gitleaks.bat dropped in the repo
+    # would turn a step green without running it. Python 3.12+ honours this variable; the check below covers 3.9-3.11.
+    os.environ.setdefault("NoDefaultCurrentDirectoryInExePath", "1")
+    untrusted = {Path(cwd).resolve(), Path.cwd().resolve()}
     for name, command in steps:
         executable = shutil.which(command[0])
         if executable is None:
             print(f"check: {name}: {command[0]} not found in PATH. `python3 doctor.py` says how to install it.", file=sys.stderr)
+            return 1
+        if command[0] != sys.executable and Path(executable).resolve().parent in untrusted:
+            print(f"check: {name}: refusing {executable}, it sits in the repo folder instead of an installed location.", file=sys.stderr)
             return 1
         print(f"check: {name}", flush=True)
         code = subprocess.run([executable] + command[1:], cwd=cwd).returncode

@@ -44,13 +44,13 @@ TESTI = {
            "hook": "commit hook active (secret scan, vault rules and tests before every commit)",
            "some_missing": "Fix the MISSING items above, then run this again.",
            "python": "Python 3.9 or newer", "git": "git", "claude": "Claude Code (claude)", "verify": "vault rules (scripts/verify)",
-           "ollama": "Ollama running (local model)", "browser": "Chrome, Chromium or Edge (post images)", "gitleaks": "gitleaks (secret scan)", "ruff": "ruff %s (linter, for scripts/check)" % RUFF_VERSION,
+           "ollama": "Ollama running (local model)", "browser": "Chrome, Chromium or Edge (post images)", "gitleaks": "gitleaks (secret scan)", "ruff": "ruff (linter, for scripts/check)",
            "config": "config.json (run setup.py)"},
     "it": {"ok": "OK", "missing": "MANCA", "optional": "facoltativo, manca", "fix": "installa:", "run": "lancia:", "all_ok": "Tutto il necessario c'è.",
            "hook": "hook di commit attivo (controllo segreti, regole del vault e test prima di ogni commit)",
            "some_missing": "Sistema le voci MANCA qui sopra, poi rilancia.",
            "python": "Python 3.9 o più recente", "git": "git", "claude": "Claude Code (claude)", "verify": "regole del vault (scripts/verify)",
-           "ollama": "Ollama in esecuzione (modello locale)", "browser": "Chrome, Chromium o Edge (immagini dei post)", "gitleaks": "gitleaks (controllo segreti)", "ruff": "ruff %s (linter, per scripts/check)" % RUFF_VERSION,
+           "ollama": "Ollama in esecuzione (modello locale)", "browser": "Chrome, Chromium o Edge (immagini dei post)", "gitleaks": "gitleaks (controllo segreti)", "ruff": "ruff (linter, per scripts/check)",
            "config": "config.json (lancia setup.py)"},
 }
 BROWSER = {

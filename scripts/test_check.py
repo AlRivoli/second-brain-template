@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Tests for scripts/check: order of the steps, stop at the first red step, missing tools."""
 import contextlib
+import inspect
 import importlib.machinery
 import importlib.util
 import io
+import os
 import pathlib
 import sys
 import tempfile
@@ -40,9 +42,22 @@ class Check(unittest.TestCase):
     def test_steps_in_the_documented_order(self):
         names = [name for name, _ in self.check.STEPS]
         self.assertEqual(names, ['vault rules', 'lint', 'script tests', 'template tests', 'secret scan'])
-        tools = [cmd[0] for _, cmd in self.check.STEPS]
-        self.assertEqual(tools[1], 'ruff')
-        self.assertEqual(tools[4], 'gitleaks')
+
+    def test_steps_run_the_documented_commands(self):
+        # Pinned on purpose: dropping --redact would print secrets where the agent reads them.
+        py = [sys.executable, '-I']
+        self.assertEqual([cmd for _, cmd in self.check.STEPS], [
+            py + ['scripts/verify'],
+            ['ruff', 'check', '.'],
+            py + ['-m', 'unittest', 'discover', '-s', 'scripts', '-p', 'test_*.py'],
+            py + ['-m', 'unittest', 'discover', '-s', 'tests'],
+            ['gitleaks', 'git', '--redact', '--no-banner', '-v', '.'],
+        ])
+
+    def test_by_default_steps_run_from_the_repo_root(self):
+        root = CHECK.parent.parent
+        self.assertEqual(self.check.ROOT, root)
+        self.assertEqual(inspect.signature(self.check.run).parameters['cwd'].default, root)
 
     def test_all_green_returns_zero(self):
         rc, out, _ = self.run_steps([('one', py('pass')), ('two', py('pass'))])
@@ -74,6 +89,23 @@ class Check(unittest.TestCase):
         ])
         self.assertEqual(rc, 1)
         self.assertFalse(marker.exists())
+
+    def test_refuses_a_tool_that_sits_in_the_repo_folder(self):
+        # A ruff.cmd or gitleaks.bat dropped in the repo must not stand in for the installed tool.
+        name = 'fake-tool-for-check-tests'
+        if os.name == 'nt':
+            (self.dir / (name + '.bat')).write_text('@exit /b 0\n', encoding='utf-8')
+        else:
+            fake = self.dir / name
+            fake.write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+            fake.chmod(0o755)
+        old_path = os.environ.get('PATH', '')
+        os.environ['PATH'] = str(self.dir) + os.pathsep + old_path
+        self.addCleanup(os.environ.__setitem__, 'PATH', old_path)
+        rc, out, err = self.run_steps([('secret scan', [name])])
+        self.assertEqual(rc, 1)
+        self.assertIn('refusing', err)
+        self.assertNotIn('check: OK', out)
 
     def test_steps_run_from_the_given_root(self):
         rc, _, _ = self.run_steps([('cwd', py('import pathlib; pathlib.Path("here").write_text("x")'))])

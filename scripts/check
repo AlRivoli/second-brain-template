@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Single check before a commit or a pull request: one command that proves the work.
+
+Usage: python3 scripts/check
+Runs, in order: the vault rules (scripts/verify), the linter (ruff), the script tests, the template tests,
+the secret scan (gitleaks). It stops at the first red step, says which one, and exits with that step's code.
+
+A missing ruff or gitleaks is a failure, not a skip: a check that does not run protects nothing.
+`python3 doctor.py` says how to install them.
+The pre-commit hook stays lighter on purpose (tests only when code is staged), so the nightly notes commit never blocks.
+"""
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+PY = [sys.executable, "-I"]
+STEPS = [
+    ("vault rules", PY + ["scripts/verify"]),
+    ("lint", ["ruff", "check", "."]),
+    ("script tests", PY + ["-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"]),
+    ("template tests", PY + ["-m", "unittest", "discover", "-s", "tests"]),
+    ("secret scan", ["gitleaks", "dir", ".", "--redact", "--no-banner"]),
+]
+
+
+def run(steps, cwd=ROOT):
+    for name, command in steps:
+        executable = shutil.which(command[0])
+        if executable is None:
+            print(f"check: {name}: {command[0]} not found in PATH. `python3 doctor.py` says how to install it.", file=sys.stderr)
+            return 1
+        print(f"check: {name}", flush=True)
+        code = subprocess.run([executable] + command[1:], cwd=cwd).returncode
+        if code:
+            print(f"check: {name} failed (exit {code}), stopped here.", file=sys.stderr)
+            return code
+    print("check: OK")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(run(STEPS))

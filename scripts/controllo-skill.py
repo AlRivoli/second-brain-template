@@ -76,8 +76,8 @@ def scansiona(cartella, tmp):
     """Esito di skillspector sulla cartella: score, severità, raccomandazione e le 3 segnalazioni più gravi."""
     rapporto = Path(tmp) / "rapporto.json"
     try:
-        r = subprocess.run([str(SKILLSPECTOR), "scan", str(cartella), "--no-llm", "--format", "json", "--output", str(rapporto)],
-                           capture_output=True, text=True, encoding="utf-8", timeout=300)
+        subprocess.run([str(SKILLSPECTOR), "scan", str(cartella), "--no-llm", "--format", "json", "--output", str(rapporto)],
+                       capture_output=True, text=True, encoding="utf-8", timeout=300)
         dati = json.loads(rapporto.read_text(encoding="utf-8"))
         valutazione = dati["risk_assessment"]
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as e:

@@ -2,7 +2,6 @@ import importlib.util
 import shutil
 import tempfile
 import unittest
-import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 

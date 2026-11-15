@@ -7,7 +7,7 @@ import json
 import os
 import re
 import tempfile
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 FORMATI = ("carosello", "immagine", "storia", "video")

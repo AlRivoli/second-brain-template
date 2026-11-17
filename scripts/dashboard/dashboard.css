@@ -682,7 +682,9 @@ g.obiettivo:hover .obiettivo-box, g.obiettivo:focus-visible .obiettivo-box, g.ob
 .task-testo { display: flex; flex-wrap: wrap; align-items: baseline; overflow-wrap: anywhere; }   /* the marks wrap under the title as a block, never the title letter by letter */
 .task-testo .punto { vertical-align: 0.05em; }   /* inside the title: the dot never stays alone on a line */
 #mappa-dettaglio .task-testo .sub { white-space: nowrap; margin-left: 8px; }
-#mappa-dettaglio { max-height: 72vh; overflow-y: auto; }
+/* position: relative makes the panel the containing block of its .solo-lettori spans (position: absolute): without it they
+   escape the scroll box, sit at their unclipped position and stretch the page with empty space on long projects */
+#mappa-dettaglio { position: relative; max-height: 72vh; overflow-y: auto; }
 .ritardo { color: var(--late); }
 .stati { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 999px; }
 .stati button { border: 0; background: transparent; height: 26px; font-size: 12px; padding: 0 10px; color: var(--muted); }

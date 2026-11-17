@@ -221,6 +221,13 @@ class HtmlDashboard(unittest.TestCase):
         self.assertIn("tagliata(r, 24)", js[js.index("function filtroPerRepo"):js.index("function dettaglioNodo")])
         self.assertIn("s('title', {}, ['repo: ' + repo.join(', ')])", js)
 
+    def test_il_pannello_del_nodo_tiene_dentro_i_testi_per_i_lettori(self):
+        # regression: the .solo-lettori spans are position: absolute; if the scrolling panel is not their containing block
+        # they escape its clip and a long project (e.g. second-brain) stretched the page with empty space below
+        css = (D / "dashboard.css").read_text(encoding="utf-8")
+        self.assertRegex(css, r"\.solo-lettori \{[^}]*position: absolute")
+        self.assertRegex(css, r"#mappa-dettaglio \{[^}]*position: relative[^}]*overflow-y: auto")
+
     def test_il_task_porta_al_suo_obiettivo(self):
         # a goal folded behind a pill is reachable from its task rows: a native button, so Enter and Space work
         js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")

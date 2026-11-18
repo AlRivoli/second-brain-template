@@ -3,7 +3,6 @@
 import json
 import pathlib
 import sys
-import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'scripts'))
 import guard  # noqa: E402

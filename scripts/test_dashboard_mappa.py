@@ -4,7 +4,6 @@ import importlib.util
 import http.client
 import json
 import os
-import re
 import tempfile
 import threading
 import unittest

@@ -7,8 +7,8 @@ Usage:
     python3 doctor.py --lang it  messages in Italian
 
 Required: Python 3.9+, git, the Claude Code CLI, and `scripts/verify` printing OK.
-Optional: Ollama (local model for the radar filter), a Chromium-based browser (post images), gitleaks (for maintainers),
-and the commit hook switched on in this clone (it is one command, and nothing reminds you to run it).
+Optional: Ollama (local model for the radar filter), a Chromium-based browser (post images), gitleaks and ruff (for maintainers,
+both run by scripts/check), and the commit hook switched on in this clone (it is one command, and nothing reminds you to run it).
 If ~/.claude/settings.json has the status line that feeds the Claude usage page, its Python and script must exist:
 Claude Code does not report a status line that fails, the page just stays on old numbers.
 """
@@ -24,6 +24,8 @@ import urllib.request
 from pathlib import Path
 
 RADICE = Path(__file__).resolve().parent
+# Same version as the lint job in .github/workflows/ci.yml: a different local ruff can disagree with CI.
+RUFF_VERSION = "0.17.3"
 SISTEMA = {"Darwin": "macos", "Linux": "linux", "Windows": "windows"}.get(platform.system(), "linux")
 
 INSTALLA = {
@@ -36,6 +38,7 @@ INSTALLA = {
     "browser": {"macos": "install Google Chrome from https://www.google.com/chrome/", "linux": "sudo apt install chromium  (or Chrome)",
                 "windows": "Microsoft Edge is already installed; or install Chrome"},
     "gitleaks": {"macos": "brew install gitleaks", "linux": "see https://github.com/gitleaks/gitleaks#installing", "windows": "winget install gitleaks.gitleaks"},
+    "ruff": dict.fromkeys(("macos", "linux", "windows"), "pipx install ruff==%s  (or: uv tool install ruff==%s)" % (RUFF_VERSION, RUFF_VERSION)),
     "hook": dict.fromkeys(("macos", "linux", "windows"), "git config core.hooksPath scripts/hooks"),
 }
 COMANDI = {"hook"}  # il rimedio è un comando da lanciare, non un programma da installare
@@ -44,7 +47,7 @@ TESTI = {
            "hook": "commit hook active (secret scan, vault rules and tests before every commit)",
            "some_missing": "Fix the MISSING items above, then run this again.",
            "python": "Python 3.9 or newer", "git": "git", "claude": "Claude Code (claude)", "verify": "vault rules (scripts/verify)",
-           "ollama": "Ollama running (local model)", "browser": "Chrome, Chromium or Edge (post images)", "gitleaks": "gitleaks (secret scan)",
+           "ollama": "Ollama running (local model)", "browser": "Chrome, Chromium or Edge (post images)", "gitleaks": "gitleaks (secret scan)", "ruff": "ruff (linter, for scripts/check)",
            "config": "config.json (run setup.py)",
            "statusline": "Claude Code status line (usage page of the dashboard)",
            "statusline_fix": "in %s replace statusLine with:"},
@@ -52,7 +55,7 @@ TESTI = {
            "hook": "hook di commit attivo (controllo segreti, regole del vault e test prima di ogni commit)",
            "some_missing": "Sistema le voci MANCA qui sopra, poi rilancia.",
            "python": "Python 3.9 o più recente", "git": "git", "claude": "Claude Code (claude)", "verify": "regole del vault (scripts/verify)",
-           "ollama": "Ollama in esecuzione (modello locale)", "browser": "Chrome, Chromium o Edge (immagini dei post)", "gitleaks": "gitleaks (controllo segreti)",
+           "ollama": "Ollama in esecuzione (modello locale)", "browser": "Chrome, Chromium o Edge (immagini dei post)", "gitleaks": "gitleaks (controllo segreti)", "ruff": "ruff (linter, per scripts/check)",
            "config": "config.json (lancia setup.py)",
            "statusline": "barra di stato di Claude Code (pagina dell'uso della dashboard)",
            "statusline_fix": "in %s sostituisci statusLine con:"},
@@ -219,6 +222,7 @@ def controlli(radice=RADICE, ci=False, home=None):
         ("ollama", False, ollama_attivo()),
         ("browser", False, trova_browser() is not None),
         ("gitleaks", False, shutil.which("gitleaks") is not None),
+        ("ruff", False, shutil.which("ruff") is not None),
     ] + ([("hook", False, hook)] if hook is not None else []) + ([("statusline", False, barra)] if barra is not None else [])
 
 

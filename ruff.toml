@@ -1,0 +1,13 @@
+# Lint for the template's Python (standard library only, Python 3.9+). Run: scripts/check, or `ruff check .`
+# Ruff is a maintainer tool, not a dependency of the template: CI pins the version, doctor.py says how to install it.
+target-version = "py39"
+# Python scripts without a .py extension.
+extend-include = ["scripts/verify", "scripts/check", "scripts/hooks/pre-commit"]
+
+[lint]
+select = ["E", "F", "B"]
+ignore = [
+    "E501", # line length: the code base uses long lines on purpose, reformatting would rewrite every file
+    "E731", # lambda assigned to a name: a style choice, used for short local helpers and test stubs
+    "B904", # raise inside except without `from`: these errors are shown to the user as messages, the chain adds nothing
+]

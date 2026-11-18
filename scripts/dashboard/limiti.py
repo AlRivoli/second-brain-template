@@ -4,7 +4,7 @@ Una sola misura per riga: la proiezione è lineare (ritmo medio del periodo fino
 """
 import calendar
 import re
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
 SOGLIA_PREVISTO = 0.9   # «da guardare» se il previsto supera il 90% della soglia
 GIORNI_VECCHIA = 7

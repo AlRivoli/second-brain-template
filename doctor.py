@@ -9,11 +9,14 @@ Usage:
 Required: Python 3.9+, git, the Claude Code CLI, and `scripts/verify` printing OK.
 Optional: Ollama (local model for the radar filter), a Chromium-based browser (post images), gitleaks and ruff (for maintainers,
 both run by scripts/check), and the commit hook switched on in this clone (it is one command, and nothing reminds you to run it).
+If ~/.claude/settings.json has the status line that feeds the Claude usage page, its Python and script must exist:
+Claude Code does not report a status line that fails, the page just stays on old numbers.
 """
 import importlib.util
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -45,13 +48,17 @@ TESTI = {
            "some_missing": "Fix the MISSING items above, then run this again.",
            "python": "Python 3.9 or newer", "git": "git", "claude": "Claude Code (claude)", "verify": "vault rules (scripts/verify)",
            "ollama": "Ollama running (local model)", "browser": "Chrome, Chromium or Edge (post images)", "gitleaks": "gitleaks (secret scan)", "ruff": "ruff (linter, for scripts/check)",
-           "config": "config.json (run setup.py)"},
+           "config": "config.json (run setup.py)",
+           "statusline": "Claude Code status line (usage page of the dashboard)",
+           "statusline_fix": "in %s replace statusLine with:"},
     "it": {"ok": "OK", "missing": "MANCA", "optional": "facoltativo, manca", "fix": "installa:", "run": "lancia:", "all_ok": "Tutto il necessario c'è.",
            "hook": "hook di commit attivo (controllo segreti, regole del vault e test prima di ogni commit)",
            "some_missing": "Sistema le voci MANCA qui sopra, poi rilancia.",
            "python": "Python 3.9 o più recente", "git": "git", "claude": "Claude Code (claude)", "verify": "regole del vault (scripts/verify)",
            "ollama": "Ollama in esecuzione (modello locale)", "browser": "Chrome, Chromium o Edge (immagini dei post)", "gitleaks": "gitleaks (controllo segreti)", "ruff": "ruff (linter, per scripts/check)",
-           "config": "config.json (lancia setup.py)"},
+           "config": "config.json (lancia setup.py)",
+           "statusline": "barra di stato di Claude Code (pagina dell'uso della dashboard)",
+           "statusline_fix": "in %s sostituisci statusLine con:"},
 }
 BROWSER = {
     "macos": ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
@@ -177,11 +184,35 @@ def hook_attivo(radice=RADICE):
     return r.stdout.strip().replace("\\", "/").rstrip("/") == "scripts/hooks"
 
 
-def controlli(radice=RADICE, ci=False):
+def impostazioni_claude(home=None):
+    return Path(home or Path.home()) / ".claude" / "settings.json"
+
+
+def barra_di_stato(home=None):
+    """True se la barra di stato che salva l'uso di Claude (scripts/statusline-uso.py) si può lanciare, False se il suo
+    comando punta a un Python o a uno script che non c'è più (una cartella rinominata o cancellata).
+    None se non c'è nulla da controllare: settings.json manca o non si legge, nessuna barra, o una barra che non è questa.
+    Claude Code non segnala una barra che fallisce: usage-live.json smette di aggiornarsi e la dashboard mostra numeri vecchi."""
+    try:
+        comando = json.loads(impostazioni_claude(home).read_text(encoding="utf-8-sig")).get("statusLine", {}).get("command")
+    except (OSError, ValueError, AttributeError, RecursionError):
+        return None
+    if not isinstance(comando, str) or "statusline-uso.py" not in comando:
+        return None
+    parti = [os.path.expanduser(a or b) for a, b in re.findall(r'"([^"]*)"|(\S+)', comando)]
+    script = next((p for p in parti if p.endswith("statusline-uso.py")), "")
+    programma = parti[0]  # un percorso (deve esistere) o un nome da cercare nel PATH (py, python3)
+    programma_ok = os.path.isfile(programma) if os.path.dirname(programma) else shutil.which(programma) is not None
+    return programma_ok and os.path.isfile(script)
+
+
+def controlli(radice=RADICE, ci=False, home=None):
     """Lista di (chiave, richiesto, ok). In CI il CLI `claude` non è richiesto: i runner non lo hanno.
-    L'hook di commit è facoltativo, così un clone appena fatto e la CI non falliscono, e compare solo dove si può attivare."""
+    L'hook di commit è facoltativo, così un clone appena fatto e la CI non falliscono, e compare solo dove si può attivare.
+    Lo stesso vale per la barra di stato: compare solo se settings.json ne ha una che lancia statusline-uso.py."""
     verify = radice / "scripts" / "verify"
     hook = hook_attivo(radice)
+    barra = barra_di_stato(home)
     return [
         ("python", True, sys.version_info >= (3, 9)),
         ("git", True, shutil.which("git") is not None),
@@ -192,7 +223,7 @@ def controlli(radice=RADICE, ci=False):
         ("browser", False, trova_browser() is not None),
         ("gitleaks", False, shutil.which("gitleaks") is not None),
         ("ruff", False, shutil.which("ruff") is not None),
-    ] + ([("hook", False, hook)] if hook is not None else [])
+    ] + ([("hook", False, hook)] if hook is not None else []) + ([("statusline", False, barra)] if barra is not None else [])
 
 
 def main(argv=None):
@@ -209,6 +240,12 @@ def main(argv=None):
         if not ok:
             if chiave in INSTALLA:
                 print("          %s %s" % (t["run" if chiave in COMANDI else "fix"], INSTALLA[chiave][SISTEMA]))
+            if chiave == "statusline":  # setup.py non sovrascrive una barra che c'è già: il comando giusto va messo a mano
+                spec = importlib.util.spec_from_file_location("sistema", RADICE / "sistema.py")
+                sistema = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(sistema)
+                print("          " + t["statusline_fix"] % impostazioni_claude())
+                print('          "statusLine": ' + json.dumps({"type": "command", "command": sistema.comando_statusline(RADICE)}))
             mancano += 1 if richiesto else 0
     if not ci:
         for testo, rimedio, richiesto in dalle_scelte(RADICE, lingua):

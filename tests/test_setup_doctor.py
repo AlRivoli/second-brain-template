@@ -1,4 +1,6 @@
+import contextlib
 import importlib.util
+import io
 import json
 import shutil
 import subprocess
@@ -220,6 +222,71 @@ class DoctorHookTest(unittest.TestCase):
         for sistema in ("macos", "linux", "windows"):
             self.assertEqual(doctor.INSTALLA["hook"][sistema], "git config core.hooksPath scripts/hooks")
 
+
+class BarraDiStatoTest(unittest.TestCase):
+    """La barra di stato che salva l'uso di Claude: se punta a una cartella che non c'è più, Claude Code non dice nulla
+    e la dashboard resta ferma ai numeri vecchi. Doctor deve dirlo."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.home = Path(self._tmp.name)
+        (self.home / ".claude").mkdir()
+        self.script = self.home / "vault" / "scripts" / "statusline-uso.py"
+        self.script.parent.mkdir(parents=True)
+        self.script.write_text("", encoding="utf-8")
+
+    def imposta(self, comando, **altro):
+        dati = {"statusLine": {"type": "command", "command": comando}} if comando is not None else altro
+        (self.home / ".claude" / "settings.json").write_text(json.dumps(dati), encoding="utf-8")
+
+    def chiavi(self):
+        return {chiave: (richiesto, ok) for chiave, richiesto, ok in doctor.controlli(RADICE, ci=True, home=self.home)}
+
+    def test_python_e_script_presenti(self):
+        self.imposta('"%s" -I "%s"' % (sys.executable, self.script))
+        self.assertIs(doctor.barra_di_stato(self.home), True)
+
+    def test_script_in_una_cartella_sparita_e_un_problema_facoltativo(self):
+        self.imposta('"%s" -I "%s"' % (sys.executable, self.home / "vecchio-clone" / "scripts" / "statusline-uso.py"))
+        self.assertIs(doctor.barra_di_stato(self.home), False)
+        self.assertEqual(self.chiavi()["statusline"], (False, False), "facoltativo: non deve far fallire doctor in CI")
+
+    def test_python_sparito(self):
+        self.imposta('"%s" -I "%s"' % (self.home / "Python99" / "python.exe", self.script))
+        self.assertIs(doctor.barra_di_stato(self.home), False)
+
+    def test_programma_dal_path_e_percorso_senza_virgolette(self):
+        self.imposta("%s -I %s" % (Path(sys.executable).name, self.script.as_posix()))
+        with unittest.mock.patch.object(doctor.shutil, "which", return_value=sys.executable):
+            self.assertIs(doctor.barra_di_stato(self.home), True)
+        with unittest.mock.patch.object(doctor.shutil, "which", return_value=None):
+            self.assertIs(doctor.barra_di_stato(self.home), False)
+
+    def test_niente_da_controllare_il_controllo_non_compare(self):
+        self.assertIsNone(doctor.barra_di_stato(self.home))  # settings.json non c'è
+        self.imposta(None, model="opus")
+        self.assertIsNone(doctor.barra_di_stato(self.home))  # nessuna barra
+        self.imposta("npx ccusage statusline")
+        self.assertIsNone(doctor.barra_di_stato(self.home))  # una barra che non è la nostra
+        (self.home / ".claude" / "settings.json").write_text("{non json", encoding="utf-8")
+        self.assertIsNone(doctor.barra_di_stato(self.home))
+        (self.home / ".claude" / "settings.json").write_text('{"statusLine": "x"}', encoding="utf-8")
+        self.assertIsNone(doctor.barra_di_stato(self.home))
+        self.assertNotIn("statusline", self.chiavi())
+
+    def test_main_stampa_il_comando_giusto_da_mettere(self):
+        uscita = io.StringIO()
+        with unittest.mock.patch.object(doctor, "impostazioni_claude", return_value=self.home / ".claude" / "settings.json"), \
+                unittest.mock.patch.object(doctor, "controlli", return_value=[("statusline", False, False)]), \
+                unittest.mock.patch.object(doctor, "dalle_scelte", return_value=[]), contextlib.redirect_stdout(uscita):
+            self.assertEqual(doctor.main(["--lang", "en"]), 0, "facoltativo: l'exit resta 0")
+        testo = uscita.getvalue()
+        self.assertIn(str(self.home / ".claude" / "settings.json"), testo)
+        riga = next(r for r in testo.splitlines() if '"statusLine":' in r)
+        incollato = json.loads("{" + riga.strip() + "}")["statusLine"]  # si incolla così com'è in settings.json
+        self.assertEqual(incollato["type"], "command")
+        self.assertIn(str(RADICE / "scripts" / "statusline-uso.py"), incollato["command"])
 
 
 class DoctorRuffTest(unittest.TestCase):

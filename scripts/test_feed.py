@@ -105,10 +105,11 @@ class FeedTest(unittest.TestCase):
         import os
         d, r = vault("- https://a.example/rss\n")
         with d:
-            feed.main([], r, lambda u: RSS)
+            # main usa la data di oggi: una finestra larga tiene valide le novità di prova del 2026-11-02
+            feed.main(["--giorni", "100000"], r, lambda u: RSS)
             file = next((r / "inbox").glob("*-novita.md"))
             os.utime(file, (100, 100))
-            feed.main([], r, lambda u: RSS)
+            feed.main(["--giorni", "100000"], r, lambda u: RSS)
             self.assertEqual(file.stat().st_mtime, 100)
 
 

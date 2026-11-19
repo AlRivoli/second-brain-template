@@ -214,7 +214,7 @@ const FONTI_SPUNTABILI = ['piano', 'scadenze'];
 function bottoneFatto(v) {
   const b = el('button', 'b-fatto', ['Fatto']);
   b.type = 'button';
-  b.setAttribute('aria-label', 'Fatto: ' + v.testo);
+  b.setAttribute('aria-label', 'Fatto: ' + (v.vista || v.testo));
   b.addEventListener('click', () => spunta(v, b));
   return b;
 }
@@ -251,9 +251,10 @@ function intestazioneGiorno(iso) {
 // Una riga dell'Agenda: ora e testo (senza #tag, al massimo 2 righe con il testo intero nel title), sotto stato e nodo; a destra le azioni, sempre nello stesso posto.
 function rigaAgenda(v) {
   const piano = v.fonte === 'piano';
-  const intero = v.titolo || v.testo;
-  const { testo, tag } = piano ? Comp.senzaTag(intero) : { testo: intero, tag: null };
-  const { testo: breve, resto } = Comp.prima(testo, 140);  // frasi intere, il resto dietro «Mostra tutto»
+  // vista (server side) has neither markers nor the first tag; the tag is read from the raw testo, which stays the task identity
+  const intero = v.vista || v.titolo || v.testo;
+  const tag = piano || v.fonte === 'scadenze' ? Comp.senzaTag(v.testo).tag : null;
+  const { testo: breve, resto } = Comp.prima(intero, 140);  // frasi intere, il resto dietro «Mostra tutto»
   const titolo = el('span', 'titolo-riga', [breve]);
   titolo.title = intero.replace(/`/g, '');
   const sotto = [];

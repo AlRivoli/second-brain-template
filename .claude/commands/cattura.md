@@ -8,6 +8,9 @@ Registra nel vault questo, scritto a ruota libera: $ARGUMENTS
 Scrivi in italiano. Spezza il testo in voci e mettine ognuna nel posto giusto:
 
 1. **Da fare** → una riga `- [ ] [data —] #tag testo` in `docs/piano.md`, con `#tag` uguale al nome del progetto in `projects/INDEX.md` (o un argomento esistente come `#second-brain`); senza progetto chiaro, senza tag. Non duplicare una riga già presente.
+   - **Legami tra task** (marcatori `chiave:valore` in coda alla riga, mai con `#`): scrivili solo se il legame è esplicito, cioè lo dico io o il testo lo afferma («dopo i passi 13 e 14», «impilata su #24»). Aggiungi `id:<slug>` (`[a-z0-9][a-z0-9-]{0,39}`) a un task nuovo solo se un altro lo aspetta; `dopo:<id>[,<id>]` per i task che deve aspettare; `chi:te` per le azioni che posso fare solo io. Esempio: `- [ ] #progetto-x Unire il ramo di setup id:px-setup dopo:px-segreti`.
+   - Un legame solo dedotto (due task che sembrano in sequenza) è un dubbio: con qualcuno davanti chiedimelo; in una run non presidiata non scriverlo nel piano ma mettilo in *Da confermare* del `daily/` di oggi.
+   - Non riscrivere mai i marcatori delle righe esistenti. Ogni scrittura di marcatori va in un commit locale a parte, con i legami aggiunti elencati nel messaggio, così posso rivederli e annullarli senza toccare il resto.
 2. **Anime, manga, film, libri** («ho visto la puntata 5 di X») → aggiorna o aggiungi la riga in `aree/anime-manga-film.md` (titolo, tipo, stato, dove sono, voto, note).
 3. **Decisione su un progetto** → riga datata in `projects/<nome>/decisions.md` e, se cambia lo stato, riscrivi lo `STATE.md` (sotto circa 20 righe) e la riga in `projects/INDEX.md`.
 4. **Fatto su di me, routine, preferenza, persona** → NON in `memory/`: aggiungi una riga datata in `inbox/cattura-YYYY-MM-DD.md` (file nuovo se manca, titolo `# Da consolidare`). Il passo di `/weekly-review` li porta in `memory/` con la tua conferma (ADR-004).

@@ -171,6 +171,15 @@ class DoctorTest(unittest.TestCase):
             (Path(t) / "config.json").write_text('{"lingua": "it"}', encoding="utf-8")
             self.assertEqual(doctor.lingua_da_config(Path(t)), "it")
 
+    def test_config_con_bom_o_annidato_troppo(self):
+        with tempfile.TemporaryDirectory() as t:
+            (Path(t) / "config.json").write_text('{"lingua": "it", "modelli": {}}', encoding="utf-8-sig")  # a BOM from Notepad
+            self.assertEqual(doctor.lingua_da_config(Path(t)), "it")
+            self.assertEqual(doctor.dalle_scelte(Path(t), "it", scaricati=[], ram=16, obsidian=True), [])
+            (Path(t) / "config.json").write_text("[" * 100000, encoding="utf-8")
+            self.assertEqual(doctor.lingua_da_config(Path(t)), "en")
+            self.assertEqual(doctor.dalle_scelte(Path(t), "it", scaricati=[], ram=16, obsidian=True), [])
+
     def test_ogni_controllo_ha_testo_in_entrambe_le_lingue_e_un_comando_per_sistema(self):
         for lingua in doctor.TESTI.values():
             for chiave, _, _ in doctor.controlli(RADICE):

@@ -524,8 +524,12 @@ td .pillola + button, td .pillola + p { margin-top: 8px; display: flex; }
 .conteggio b { color: var(--text); font-weight: 500; }
 .punto { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; flex: none; background: var(--todo); }
 .punto.st-da_fare { background: var(--todo); } .punto.st-in_corso { background: var(--doing); } .punto.st-fatto { background: var(--done); } .punto.ritardo { background: var(--late); }
+/* four map states: ready is solid grey, waiting is empty and dashed (never colour alone) */
+.punto.st-pronto { background: var(--todo); } .punto.st-in_attesa { background: none; border: 1.5px dashed var(--muted); box-sizing: border-box; }
 .mappa-box { position: relative; background: var(--raised); border-radius: var(--radius-card); height: clamp(520px, calc(100vh - 190px), 780px); overflow: hidden; }
 .mappa-testa { position: absolute; top: 16px; left: 20px; right: 20px; display: flex; justify-content: space-between; align-items: center; z-index: 2; pointer-events: none; }
+/* a solid strip behind the header: once a click frames a node, the zoomed goal band slides under it and must not show through */
+.mappa-testa::before { content: ''; position: absolute; inset: -16px -20px -10px; background: var(--raised); z-index: -1; pointer-events: auto; }
 .mappa-testa h2 { font-size: 14px; font-weight: 600; margin: 0; }
 .mappa-testa .scelta { pointer-events: auto; margin: 0; background: var(--surface); border: 1px solid var(--border); }
 #mappa-svg { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; outline: none; }
@@ -559,24 +563,114 @@ td .pillola + button, td .pillola + p { margin-top: 8px; display: flex; }
 .azione:hover circle, .azione:focus-visible circle { stroke: var(--text); }
 .nodo:focus-visible .disco, .nodo.aperto .disco { stroke: var(--text); stroke-width: 2; }
 #mappa-svg.focus .nodo:not(.aperto) { opacity: .28; }
-.alone { fill: none; stroke: var(--doing); stroke-width: 1.5; opacity: 0; }
+.alone { fill: none; stroke: var(--doing); stroke-width: 1.5; opacity: 0; transform-box: fill-box; transform-origin: center; }
+/* the fixed node keeps a ring: the selection is a shape, not only a colour (the next action's breathing ring below wins) */
+.nodo.fissato .alone { opacity: .55; stroke: var(--muted); }
 .nodo.prossimo .alone { opacity: .9; animation: respira 2.6s ease-in-out infinite; }
 @keyframes respira { 50% { stroke-width: 5; opacity: .35; } }
 .st-da_fare .sat-punto, .sat.st-da_fare .sat-punto { fill: var(--todo); } .sat.st-in_corso .sat-punto { fill: var(--doing); } .sat.st-fatto .sat-punto { fill: var(--done); }
 path.arco.st-da_fare, circle.arco.st-da_fare { stroke: var(--todo); } path.arco.st-in_corso, circle.arco.st-in_corso { stroke: var(--doing); } path.arco.st-fatto, circle.arco.st-fatto { stroke: var(--done); }
+path.arco.st-pronto, circle.arco.st-pronto { stroke: var(--todo); }
+path.arco.st-in_attesa, circle.arco.st-in_attesa { stroke: var(--todo); stroke-width: 2; stroke-dasharray: 2 5; }
+.sat.st-pronto .sat-punto { fill: var(--todo); }
+.sat.st-in_attesa .sat-punto { fill: var(--raised); stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 2 2; }
 .sat { outline: none; cursor: default; }
 .sat[role="button"] { cursor: pointer; }
-.sat-dentro { animation: entra .3s cubic-bezier(.2, .8, .2, 1) both; }
-@keyframes entra { from { transform: scale(.3); opacity: 0; } }
 .sat .sat-punto { stroke: var(--raised); stroke-width: 3; }
 .sat text { font-size: calc(12px / var(--k, 1)); fill: var(--text); paint-order: stroke; stroke: var(--raised); stroke-width: calc(4px / var(--k, 1)); stroke-linejoin: round; }
 .sat.st-fatto text { fill: var(--faint); }
 .sat.ritardo text { fill: var(--late); }
+.sat.st-in_attesa text { fill: var(--muted); }
+.sat.st-in_attesa.ritardo text { fill: var(--late); }   /* late and blocked: the red wins over the waiting grey */
+.sat.errore text { fill: var(--late); }
+/* dependency thread of the selected waiting task: blockers in the same node are outlined, other nodes send an arrow */
+.sat.bloccante .sat-punto { stroke: var(--text); stroke-width: 2; stroke-dasharray: none; }
+.sat.bloccante text { font-weight: 600; }
+#mappa-svg.focus .nodo.bloccante { opacity: .75; }
+.dipendenza { fill: none; stroke: var(--muted); stroke-width: 1.5; pointer-events: none; }
+#mappa-freccia path { fill: var(--muted); }
 .sat[role="button"]:hover .sat-punto, .sat:focus-visible .sat-punto { stroke: var(--text); stroke-width: 2; }
+/* goals: rounded boxes in a band above the nodes, light dashed lines to the nodes they touch; undefined goals keep a dashed outline */
+g.obiettivo { cursor: pointer; outline: none; transition: opacity .2s; }
+.obiettivo-box { fill: var(--surface); stroke: var(--border); stroke-width: 1; }
+g.obiettivo.non-definito .obiettivo-box { stroke: var(--muted); stroke-dasharray: 4 3; }
+/* deadlines: at risk or past due also changes the outline, and the box says it in a bold word next to the date */
+g.obiettivo.a-rischio .obiettivo-box { stroke: var(--warning-edge); stroke-width: 1.5; }
+g.obiettivo.scaduto .obiettivo-box { stroke: var(--late); stroke-width: 1.5; }
+.obiettivo-rischio { font-weight: 600; fill: var(--pill-warning-ink); }
+.obiettivo.scaduto .obiettivo-rischio { fill: var(--late); }
+g.obiettivo:hover .obiettivo-box, g.obiettivo:focus-visible .obiettivo-box, g.obiettivo.scelto .obiettivo-box { stroke: var(--text); stroke-width: 2; }
+/* motion is WAAPI from mappa.js (anima, esce), only for a change the user caused: a redraw never replays it */
+.uscita { pointer-events: none; }   /* the fading copy of what just left */
+/* «+k altri» / «+k completati»: the folded goals of the band, one pill per group */
+.pastiglia { cursor: pointer; outline: none; }
+.pastiglia-box { fill: var(--surface); stroke: var(--control); stroke-width: 1; transition: fill .15s, stroke .15s; transform-box: fill-box; transform-origin: center; }   /* solid: dashed already means undefined or waiting */
+.pastiglia[aria-expanded="true"] .pastiglia-box { fill: var(--active); }
+.pastiglia:hover .pastiglia-box, .pastiglia:focus-visible .pastiglia-box { fill: var(--active); stroke: var(--text); stroke-width: 2; }
+.pastiglia-testo { font-size: 12px; font-weight: 500; fill: var(--muted); text-anchor: middle; }
+.pastiglia:hover .pastiglia-testo, .pastiglia:focus-visible .pastiglia-testo { fill: var(--text); }
+.obiettivo-titolo { font-size: 13px; font-weight: 500; fill: var(--text); }
+.obiettivo-sub { font-size: 11px; fill: var(--faint); }
+.obiettivo .arco, .obiettivo-traccia { fill: none; stroke-width: 6; }   /* below path.arco.st-in_attesa in specificity: waiting stays thin and dashed */
+.obiettivo-traccia { stroke: var(--active); }
+.obiettivo-linea { fill: none; stroke: var(--control); stroke-width: 1; stroke-dasharray: 3 4; pointer-events: none; transition: opacity .2s; }
+.obiettivo-linea.scelta { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: none; }
+#mappa-svg.con-obiettivo .nodo:not(.coinvolto), #mappa-svg.con-obiettivo .obiettivo:not(.scelto), #mappa-svg.con-obiettivo .obiettivo-linea:not(.scelta) { opacity: .28; }
+.mappa-vuota { font-size: 14px; fill: var(--muted); text-anchor: middle; }
+/* Goal graph: over the map, under the header strip (its top is set from mappa.js), scrolling down only. The map underneath is
+   hidden with visibility, so it keeps its size, view and zoom. Waiting is dashed, a ghost is dashed and hollow, error is red
+   plus a word: never colour alone. */
+.mappa-grafo { position: absolute; top: 64px; left: 0; right: 0; bottom: 0; overflow-x: hidden; overflow-y: auto; scrollbar-gutter: stable; background: var(--raised); border-radius: 0 0 var(--radius-card) var(--radius-card); z-index: 1; transform-origin: 50% 0; }
+.grafo-azioni { display: none; gap: 8px; align-items: center; }
+@media (min-width: 761px) {
+  .mappa-box.con-grafo #mappa-svg, .mappa-box.con-grafo .legenda, .mappa-box.con-grafo .mappa-zoom { visibility: hidden; }
+  .mappa-box.con-grafo .grafo-azioni { display: flex; }
+  .mappa-box.con-grafo .mappa-testa-azioni > :not(.grafo-azioni) { display: none; }
+}
+.grafo-azioni button[aria-pressed="true"] { background: var(--active); border-color: var(--text); }
+.grafo-svg { display: block; }
+.grafo-nodo, .grafo-radice { cursor: pointer; outline: none; transition: opacity .2s; }
+.grafo-box { fill: var(--surface); stroke: var(--border); stroke-width: 1; }
+.grafo-radice .grafo-box { stroke: var(--control); stroke-width: 1.5; }
+.grafo-radice.a-rischio .grafo-box { stroke: var(--warning-edge); }
+.grafo-radice.scaduto .grafo-box { stroke: var(--late); }
+.grafo-nodo:hover .grafo-box, .grafo-radice:hover .grafo-box { stroke: var(--muted); }
+.grafo-anello { fill: none; stroke: var(--text); stroke-width: 2; opacity: 0; }
+.grafo-nodo:focus-visible .grafo-anello, .grafo-radice:focus-visible .grafo-anello { opacity: 1; }
+.grafo-titolo { font-size: 13px; font-weight: 500; fill: var(--text); }
+.grafo-sub { font-size: 11px; fill: var(--faint); }
+.grafo-punto { fill: var(--todo); }
+.grafo-nodo.st-in_corso .grafo-punto { fill: var(--doing); }
+.grafo-nodo.st-fatto .grafo-punto { fill: var(--done); }
+.grafo-nodo.st-in_attesa .grafo-punto { fill: var(--surface); stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 2 2; }
+.grafo-nodo.st-in_attesa .grafo-box { stroke: var(--muted); stroke-dasharray: 4 3; }
+.grafo-nodo.st-in_attesa .grafo-titolo { fill: var(--muted); }
+.grafo-nodo.st-fatto { opacity: .55; }
+.grafo-nodo.fantasma .grafo-box { fill: var(--raised); stroke: var(--muted); stroke-dasharray: 1 4; stroke-linecap: round; stroke-width: 1.5; }
+.grafo-nodo.fantasma .grafo-titolo { fill: var(--muted); font-style: italic; }
+.grafo-nodo.errore .grafo-box { stroke: var(--late); stroke-width: 1.5; }
+.grafo-nodo.errore .grafo-stato, .grafo-nodo.ritardo .grafo-titolo, .grafo-ritardo { fill: var(--late); }
+.grafo-ritardo, .grafo-avviso, .grafo-nodo.errore .grafo-stato { font-weight: 600; }
+.grafo-avviso { fill: var(--pill-warning-ink); }
+.grafo-nodo.scelto .grafo-box { fill: var(--active); stroke: var(--text); stroke-width: 2; stroke-dasharray: none; }
+.grafo-nodo.vicino .grafo-box { stroke: var(--text); stroke-width: 1.5; }
+.mappa-grafo.con-scelta .grafo-nodo:not(.scelto):not(.vicino), .mappa-grafo.con-scelta .grafo-arco:not(.vicino) { opacity: .4; }
+.grafo-arco { fill: none; stroke: var(--muted); stroke-width: 1.5; pointer-events: none; transition: opacity .2s; }
+.grafo-arco.radice { stroke: var(--control); stroke-width: 1; }
+.grafo-arco.fantasma { stroke-dasharray: 4 3; }
+.grafo-arco.fatto { opacity: .5; }
+.grafo-arco.vicino { stroke: var(--text); stroke-width: 2; opacity: 1; }
+#grafo-freccia path { fill: var(--muted); }
+#grafo-freccia-forte path { fill: var(--text); }
+.grafo-parentesi { fill: none; stroke: var(--control); stroke-width: 1.5; }
+.grafo-parallelo { font-size: 10px; fill: var(--faint); text-anchor: middle; }
+.grafo-nota { font-size: 11px; font-weight: 600; fill: var(--late); }
 .zona, .zona * { fill: transparent; stroke: transparent; pointer-events: all; }
 .filo { stroke: var(--control); stroke-width: 1; }
 #mappa-dettaglio h2 { font-size: 14px; font-weight: 600; }
 #mappa-dettaglio .sub { font-weight: 400; margin: 0; }
+.scadenza-obiettivo { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; font-size: 14px; }
+.mappa-lista h3 .stato { margin-left: 8px; font-weight: 500; }
 .dove { display: flex; align-items: center; font-size: 12px; color: var(--muted); }
 .titolo-azione { font: 400 24px/1.2 var(--serif); letter-spacing: -0.01em; margin: 10px 0 8px; overflow-wrap: anywhere; }
 .titolo-dialogo { font: 400 18px/1.3 var(--serif); margin: 12px 0; overflow-wrap: anywhere; }
@@ -585,30 +679,52 @@ path.arco.st-da_fare, circle.arco.st-da_fare { stroke: var(--todo); } path.arco.
 .task { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-top: 1px solid var(--rule); }
 .task:first-child { border-top: 0; }
 .task.scelto { background: var(--active); border-left: 3px solid var(--text); margin: 0 -8px; padding: 10px 8px 10px 5px; border-radius: var(--radius-inner); }
-.task-testo { display: flex; align-items: baseline; overflow-wrap: anywhere; }
-.task-testo .punto { align-self: center; }
+.task-testo { display: flex; flex-wrap: wrap; align-items: baseline; overflow-wrap: anywhere; }   /* the marks wrap under the title as a block, never the title letter by letter */
+.task-testo .punto { vertical-align: 0.05em; }   /* inside the title: the dot never stays alone on a line */
 #mappa-dettaglio .task-testo .sub { white-space: nowrap; margin-left: 8px; }
-#mappa-dettaglio { max-height: 72vh; overflow-y: auto; }
+/* position: relative makes the panel the containing block of its .solo-lettori spans (position: absolute): without it they
+   escape the scroll box, sit at their unclipped position and stretch the page with empty space on long projects */
+#mappa-dettaglio { position: relative; max-height: 72vh; overflow-y: auto; }
 .ritardo { color: var(--late); }
 .stati { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 999px; }
 .stati button { border: 0; background: transparent; height: 26px; font-size: 12px; padding: 0 10px; color: var(--muted); }
 .stati button[aria-pressed="true"] { background: var(--active); color: var(--text); }
 .task .riga-azioni { margin-top: 0; }
+.task .motivo { font-size: 13px; }
+.task.st-in_attesa .task-testo { color: var(--muted); }
+.task.st-in_attesa .task-testo.ritardo { color: var(--late); }
+.task.errore .motivo, .task-lista.errore .motivo { color: var(--late); }
+.tocca-a-te { align-self: center; font-size: 12px; }
+/* repos: a chip per repo of a task, the names under a node with more than one; the same-repo warning is a word, not only a colour */
+.repo-elenco { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.repo { font-family: var(--mono); font-size: 11.5px; line-height: 18px; padding: 0 6px; border: 1px solid var(--border); border-radius: var(--radius-chip); background: var(--raised); color: var(--text); overflow-wrap: anywhere; }
+.task > .repo-elenco, .task > .avviso-repo { align-self: flex-start; }
+/* a task's goal: a small button in its row that selects the goal; neutral, the goal is not a state */
+button.chip-obiettivo { align-self: flex-start; height: auto; min-height: 24px; padding: 2px 8px; border-color: var(--border); border-radius: var(--radius-chip); font-size: 12px; font-weight: 400; line-height: 18px; color: var(--muted); text-align: left; overflow-wrap: anywhere; }
+button.chip-obiettivo:hover { color: var(--text); }
+.nodo .repo-nodo { font-family: var(--mono); font-size: calc(10.5px / var(--k, 1)); fill: var(--muted); text-anchor: middle; }
+#mappa-avvia .scelta-repo { margin: 4px 0 0; padding: 6px 14px 10px; border: 1px solid var(--border); border-radius: var(--radius-inner); }
+#mappa-avvia .scelta-repo legend { padding: 0 4px; font-size: 13px; color: var(--muted); }
+#mappa-avvia .scelta-repo label { display: flex; align-items: center; gap: 8px; min-height: 32px; font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; cursor: pointer; }
+.gruppo { font-size: 12px; font-weight: 600; color: var(--muted); margin: 16px 0 2px; }
+.gruppo-fatti summary .gruppo { display: inline; }
+.mappa-lista .gruppo { margin: 8px 0 2px; }
 .prossimi li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--rule); }
 .prossimi li:first-child { border-top: 0; }
 .prossimi .quando { color: var(--muted); white-space: nowrap; font-size: 13px; }
 .prossimi li > span:first-child { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--primary); color: var(--primary-ink); padding: 10px 18px; border-radius: 999px; font-size: 14px; z-index: 20; max-width: 90vw; }
 .toast[hidden] { display: none; }
-#mappa-avvia, #mappa-nuovo, #mappa-progetto { border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--surface); color: var(--text); padding: 24px; max-width: min(520px, 92vw); }
-#mappa-avvia::backdrop, #mappa-nuovo::backdrop, #mappa-progetto::backdrop { background: var(--scrim); }
-#mappa-avvia h2, #mappa-nuovo h2, #mappa-progetto h2 { margin: 0 0 8px; font-size: 18px; }
-#mappa-nuovo, #mappa-progetto { width: min(520px, 92vw); box-sizing: border-box; }
+#mappa-avvia, #mappa-nuovo, #mappa-progetto, #mappa-archivia, #mappa-cartella { border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--surface); color: var(--text); padding: 24px; max-width: min(520px, 92vw); }
+#mappa-avvia::backdrop, #mappa-nuovo::backdrop, #mappa-progetto::backdrop, #mappa-archivia::backdrop, #mappa-cartella::backdrop { background: var(--scrim); }
+#mappa-avvia h2, #mappa-nuovo h2, #mappa-progetto h2, #mappa-archivia h2, #mappa-cartella h2 { margin: 0 0 8px; font-size: 18px; }
+#mappa-nuovo, #mappa-progetto, #mappa-cartella { width: min(520px, 92vw); box-sizing: border-box; }
 #mappa-progetto label { display: grid; gap: 6px; margin-top: 14px; font-size: 14px; font-weight: 500; }
 #mappa-progetto label input, #mappa-progetto label select { margin-top: 0; }
 #mappa-dettaglio .scelta.minore { margin: 0 0 10px; }
+.azioni-progetto { border-top: 1px solid var(--rule); padding-top: 10px; }   /* what changes the project itself, apart from the daily actions */
 .mappa-testa-azioni { display: flex; align-items: center; gap: 8px; pointer-events: auto; }
-#mappa-nuovo input, #mappa-progetto input, #mappa-progetto select { width: 100%; box-sizing: border-box; height: 36px; margin-top: 12px; padding: 0 10px; font: 400 14px var(--font); color: var(--text); background: var(--raised); border: 1px solid var(--control); border-radius: var(--radius-control); }
+#mappa-nuovo input, #mappa-cartella input, #mappa-progetto input, #mappa-progetto select { width: 100%; box-sizing: border-box; height: 36px; margin-top: 12px; padding: 0 10px; font: 400 14px var(--font); color: var(--text); background: var(--raised); border: 1px solid var(--control); border-radius: var(--radius-control); }
 .mappa-lista li > h3 { font-size: 14px; margin: 12px 0 4px; font-weight: 600; }
 .mappa-lista h3 .sub { margin: 0 0 0 8px; font-weight: 400; display: inline; }
 .mappa-lista .tipo-nodo { margin-left: 8px; color: var(--muted); font-weight: 400; font-size: 12px; }
@@ -616,16 +732,21 @@ path.arco.st-da_fare, circle.arco.st-da_fare { stroke: var(--todo); } path.arco.
 button.link { border: 0; background: none; height: auto; padding: 0; text-align: left; font-weight: 400; font-size: 14px; line-height: 1.4; }
 button.link:hover { text-decoration: underline; background: none; }
 @media (max-width: 760px) {
-  #mappa-svg, .legenda, .mappa-zoom { display: none; }
+  #mappa-svg, .legenda, .mappa-zoom, .mappa-grafo { display: none; }   /* no graph on phones: the list groups by row */
   .mappa-box { height: auto; padding: 16px; overflow: visible; }
   .mappa-testa { position: static; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+  .mappa-testa::before { content: none; }
+  .mappa-testa-azioni { flex-wrap: wrap; max-width: 100%; }
+  .mappa-testa .scelta { max-width: 100%; }
   .task-lista { flex-wrap: wrap; }
-  .task-lista .sub { flex-basis: 100%; padding-left: 16px; margin: 0; }
+  .task-lista > button.link { flex: 1 1 0; min-width: 0; }   /* a long title stays beside its state dot instead of wrapping under it */
+  .task-lista .sub, .task-lista .repo-elenco { flex-basis: 100%; padding-left: 16px; margin: 0; }
+  .task-lista .avviso-repo, .task-lista .chip-obiettivo { margin-left: 16px; }
   .mappa-lista { position: static; width: auto; height: auto; overflow: visible; clip-path: none; white-space: normal; }
   .saluto { font-size: 30px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .nodo, .nodo.prossimo .alone, .sat-dentro { transition: none !important; animation: none !important; }
+  .nodo, .nodo.prossimo .alone, .sat-dentro, .obiettivo.rivelato, .grafo-nodo, .grafo-radice, .grafo-arco { transition: none !important; animation: none !important; }
 }
 
 /* Componenti condivisi delle pagine secondarie (componenti.js) */

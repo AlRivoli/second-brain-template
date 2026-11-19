@@ -4,12 +4,14 @@
 Uso: scripts/attivita-progetti.py [--giorni N]
 Senza opzioni stampa solo i progetti con commit nuovi dall'ultimo cambio dello STATE (niente output = niente da
 aggiornare). Con --giorni N guarda invece gli ultimi N giorni, per la revisione settimanale.
-Sola lettura dei repo, tutti i branch (il lavoro sta anche in feat/* e nei worktree). Non tocca la cartella riservata:
-cerca solo projects/<nome>/STATE.md (ADR-001, ADR-002).
+Sola lettura dei repo, tutti i branch (il lavoro sta anche in feat/* e nei worktree). Non tocca le cartelle del lavoro e
+riservata, in qualunque maiuscola (ADR-001, ADR-002): con config.json illeggibile o di forma inattesa non stampa niente ed
+esce con 1. Un repo su un percorso di rete si salta con un avviso, prima di lanciare git.
 Un progetto può avere più righe «Repo:», una per repo: si leggono tutte e, se sono più di una, ogni riga dice da quale
 repo viene. Un repo che non si legge si salta con un avviso su stderr, gli altri del progetto restano.
 """
 import argparse
+import importlib.util
 import re
 import subprocess
 import sys
@@ -18,6 +20,11 @@ from datetime import datetime
 from pathlib import Path
 
 VAULT = Path(__file__).resolve().parent.parent
+# The dashboard's reading of the reserved folder and of network paths (percorsi.py), loaded from the file: under -I the
+# script's folder is not on sys.path, and the dashboard loads this script the same way
+_spec = importlib.util.spec_from_file_location("percorsi", Path(__file__).resolve().parent / "percorsi.py")
+percorsi = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(percorsi)
 REPO = re.compile(r"^- \*\*Repo:\*\* (.+)$", re.M)
 MAX_COMMIT = 30
 MAX_FILE = 15
@@ -58,12 +65,20 @@ def attivita(repo, da_ts):
     return righe
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--giorni", type=int)
-    giorni = ap.parse_args().giorni
+    giorni = ap.parse_args(argv).giorni
+    try:
+        riservate = percorsi.nomi_riservati(percorsi.scelta_riservata(VAULT))
+    except RuntimeError as e:  # the reserved folder is unknown: no STATE is read, nothing is printed (ADR-002)
+        print(getattr(e, "motivo", None) or "config.json non leggibile o non valido: non posso escludere la cartella riservata, nessun progetto letto",
+              file=sys.stderr)
+        return 1
     for stato in sorted((VAULT / "projects").glob("*/STATE.md")):
         nome = stato.parent.name
+        if nome.casefold() in riservate:
+            continue
         repo_progetto = repo_di(stato.read_text(encoding="utf-8"))
         if not repo_progetto:
             continue
@@ -75,6 +90,9 @@ def main():
         piu_repo = len(repo_progetto) > 1
         uscita, attivi = [], []
         for repo in repo_progetto:
+            if not percorsi.percorso_locale(Path(repo).expanduser()):  # git -C would open a connection to another computer
+                print("%s: repo non su un disco di questo computer, saltato" % nome, file=sys.stderr)
+                continue
             try:
                 righe = attivita(repo, da_ts)
             except (OSError, subprocess.SubprocessError) as e:
@@ -87,10 +105,11 @@ def main():
         if uscita:
             print("## %s (repo %s)" % (nome, ", ".join(attivi)))
             print("\n".join(uscita))
+    return 0
 
 
 if __name__ == "__main__":
     # Callers read this output as UTF-8. Under -I PYTHONUTF8 is ignored, so on Windows a pipe would get the ANSI
     # code page: an accent in a commit message would break the reader, a character outside it would crash here.
     sys.stdout.reconfigure(encoding="utf-8")
-    main()
+    sys.exit(main())

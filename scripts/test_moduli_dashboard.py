@@ -73,6 +73,23 @@ class ModuliAttiviTest(unittest.TestCase):
             (Path(d) / "config.json").write_text("{ no", encoding="utf-8")
             self.assertTrue(all(server.moduli_attivi(d).values()))
 
+    def test_config_con_bom_legge_i_moduli_scelti(self):
+        # a config.json saved by a Windows editor starts with a BOM: it must not show every module
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "config.json").write_text(json.dumps({"moduli": {"radar": {"attivo": True}}}), encoding="utf-8-sig")
+            self.assertEqual({k: v for k, v in server.moduli_attivi(d).items() if v}, {"radar": True})
+
+    def test_config_annidato_troppo_non_rompe_la_dashboard(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "config.json").write_text("[" * 100000, encoding="utf-8")
+            self.assertTrue(all(server.moduli_attivi(d).values()))
+
+    def test_config_json_valido_ma_non_un_oggetto_come_assente(self):
+        for testo in ("[1, 2]", "\"moduli\"", "3", "null"):
+            with self.subTest(testo=testo), tempfile.TemporaryDirectory() as d:
+                (Path(d) / "config.json").write_text(testo, encoding="utf-8")
+                self.assertTrue(all(server.moduli_attivi(d).values()))
+
 
 class PagineDeiModuliTest(unittest.TestCase):
     def test_le_pagine_dei_moduli_dichiarano_a_quale_modulo_appartengono(self):

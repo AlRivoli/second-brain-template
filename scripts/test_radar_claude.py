@@ -1,7 +1,9 @@
+import io
 import importlib.util
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location("radar_claude", Path(__file__).resolve().parent / "radar-claude.py")
@@ -62,6 +64,33 @@ class RadarClaude(unittest.TestCase):
         self.assertNotIn("lavoro", viste[0])
         self.assertNotIn("segreto", viste[0])
         self.assertNotIn("Cliente X", viste[0])
+
+    def test_la_riservata_resta_fuori_con_bom_e_con_le_maiuscole(self):
+        # Notepad saves config.json with a BOM; the wizard accepts «Projects/Segreto»: both must still exclude the folder (ADR-002)
+        for cartella, codifica in (("projects/segreto", "utf-8-sig"), ("Projects/Segreto", "utf-8"), ("projects\\SEGRETO", "utf-8")):
+            with self.subTest(cartella=cartella, codifica=codifica):
+                (self.v / "config.json").write_text(json.dumps({"moduli": {"riservata": {"attivo": True, "cartella": cartella}}}), encoding=codifica)
+                _, viste = self.esegui({"schede": []})
+                self.assertNotIn("segreto", viste[0])
+                self.assertIn("api:", viste[0])
+
+    def test_config_illeggibile_non_manda_niente(self):
+        # unknown reserved folder: nothing may reach the model, and the job must fail rather than run open
+        for testo in ('{"moduli": {"riservata": {"attivo": true}}}', "{non json", '{"moduli": {"riservata": {"attivo": "si", "cartella": "projects/segreto"}}}'):
+            with self.subTest(testo=testo):
+                (self.v / "config.json").write_text(testo, encoding="utf-8")
+                viste = []
+                with self.assertRaises(RuntimeError):
+                    rc.radar_claude(self.v, lambda i, t: viste.append(t) or json.dumps({"schede": []}))  # noqa: B023 - chiamata subito, nello stesso giro del ciclo
+                self.assertEqual(viste, [])
+
+    def test_main_esce_con_errore_se_config_illeggibile(self):
+        (self.v / "config.json").write_text("{non json", encoding="utf-8")
+        with mock.patch.object(rc, "VAULT", self.v), mock.patch.object(rc.radar_claude, "__defaults__", (self.v, None, None)), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertEqual(rc.main([]), 1)
+        self.assertIn("radar:", err.getvalue())
+        self.assertNotIn(str(self.v), err.getvalue())
 
     def test_la_scheda_usa_titolo_e_link_dell_inbox(self):
         testo, _ = self.esegui({"schede": [{"n": 1, "progetti": ["api", "sito", "lavoro", "inventato", "api"], "tipo": "sicurezza", "cosa": "tre CVE", "azione": "aggiornare Node", "costo": "10 minuti",

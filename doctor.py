@@ -105,8 +105,8 @@ def comando_ok(args):
 
 def lingua_da_config(radice=RADICE):
     try:
-        return json.loads((radice / "config.json").read_text(encoding="utf-8")).get("lingua", "en")
-    except (OSError, ValueError):
+        return json.loads((radice / "config.json").read_text(encoding="utf-8-sig")).get("lingua", "en")  # -sig: a BOM from Notepad
+    except (OSError, ValueError, RecursionError):
         return "en"
 
 
@@ -144,8 +144,8 @@ FRASI = {
 def dalle_scelte(radice=RADICE, lingua="en", scaricati=None, ram=None, obsidian=None):
     """[(testo, rimedio o None, richiesto)] su ciò che serve per le scelte fatte in setup.py: non chiede programmi che non hai scelto."""
     try:
-        cfg = json.loads((radice / "config.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        cfg = json.loads((radice / "config.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError, RecursionError):
         return []
     f, out = FRASI.get(lingua, FRASI["en"]), []
     modelli = {k: str(v) for k, v in cfg.get("modelli", {}).items() if str(v).startswith("ollama:")}

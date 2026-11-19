@@ -17,6 +17,15 @@ from pathlib import Path
 VAULT = Path(__file__).resolve().parent.parent
 
 
+class ErroreCalendario(RuntimeError):
+    """A RuntimeError whose `codice` names the template of its message. The text stays the full one for the command line;
+    the dashboard shows a fixed sentence for the code instead, because the text names files of the secrets folder and calendars."""
+
+    def __init__(self, codice, messaggio):
+        super().__init__(messaggio)
+        self.codice = codice
+
+
 def _carica(nome):
     spec = importlib.util.spec_from_file_location(nome, Path(__file__).resolve().parent / (nome + ".py"))
     modulo = importlib.util.module_from_spec(spec)
@@ -58,7 +67,7 @@ JSON.stringify({tolti: ev.length});
 def _osascript(codice, timeout=300):
     r = subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", "-e", codice], capture_output=True, text=True, encoding="utf-8", timeout=timeout)
     if r.returncode != 0:
-        raise RuntimeError((r.stderr or "osascript non riuscito").strip().splitlines()[-1][:200])
+        raise ErroreCalendario("macos", (r.stderr or "osascript non riuscito").strip().splitlines()[-1][:200])
     return r.stdout.strip()
 
 
@@ -105,19 +114,19 @@ def carica_voci(file=None):
     percorsi = _carica("percorsi")
     file = Path(file or percorsi.cartella_segreti() / "calendari.json")
     if not file.is_file():
-        raise RuntimeError("manca %s: ci vanno i calendari da leggere (vedi la guida)" % file)
+        raise ErroreCalendario("calendari-manca", "manca %s: ci vanno i calendari da leggere (vedi la guida)" % file)
     if not percorsi.permessi_stretti(file):
-        raise RuntimeError("%s è leggibile da altri utenti: chmod 600 %s" % (file, file))
+        raise ErroreCalendario("calendari-permessi", "%s è leggibile da altri utenti: chmod 600 %s" % (file, file))
     try:
         voci = json.loads(file.read_text(encoding="utf-8"))["calendari"]
     except (ValueError, KeyError, TypeError):
-        raise RuntimeError('%s non è valido: serve {"calendari": [{"nome": "...", "url": "https://..."}]}' % file)
+        raise ErroreCalendario("calendari-non-valido", '%s non è valido: serve {"calendari": [{"nome": "...", "url": "https://..."}]}' % file)
     for v in voci:
         if not isinstance(v, dict) or not isinstance(v.get("nome"), str) or not 0 < len(v["nome"]) <= 60:
-            raise RuntimeError("%s: ogni calendario ha un nome (al massimo 60 caratteri)" % file)
+            raise ErroreCalendario("calendari-non-valido", "%s: ogni calendario ha un nome (al massimo 60 caratteri)" % file)
         fonte = v.get("url") or v.get("file")
         if not isinstance(fonte, str) or ("url" in v and not v["url"].lower().replace("webcal://", "https://", 1).startswith("https://")):
-            raise RuntimeError("%s: «%s» ha bisogno di un indirizzo https:// o di un file" % (file, v["nome"]))
+            raise ErroreCalendario("calendari-non-valido", "%s: «%s» ha bisogno di un indirizzo https:// o di un file" % (file, v["nome"]))
     return voci
 
 
@@ -167,7 +176,7 @@ class Ics:
             out += [dict(e, calendario=v["nome"]) for e in trovati]
             self.avvisi += ["%s: %s" % (v["nome"], a) for a in avvisi]
         if guasti:  # con un calendario che manca la disponibilità sarebbe sbagliata: meglio dire che non si legge
-            raise RuntimeError("non riesco a leggere: " + ", ".join(guasti))
+            raise ErroreCalendario("illeggibili", "non riesco a leggere: " + ", ".join(guasti))
         return out
 
 
@@ -176,15 +185,15 @@ def carica_caldav(file=None):
     percorsi = _carica("percorsi")
     file = Path(file or percorsi.cartella_segreti() / "caldav.json")
     if not file.is_file():
-        raise RuntimeError("manca %s: ci vanno server, utente e password per app (vedi la guida)" % file)
+        raise ErroreCalendario("caldav-manca", "manca %s: ci vanno server, utente e password per app (vedi la guida)" % file)
     if not percorsi.permessi_stretti(file):
-        raise RuntimeError("%s è leggibile da altri utenti: chmod 600 %s" % (file, file))
+        raise ErroreCalendario("caldav-permessi", "%s è leggibile da altri utenti: chmod 600 %s" % (file, file))
     try:
         dati = json.loads(file.read_text(encoding="utf-8"))
         if not all(isinstance(dati[k], str) and dati[k] for k in ("server", "utente", "password")):
             raise KeyError
     except (ValueError, KeyError, TypeError):
-        raise RuntimeError('%s non è valido: serve {"server": "https://...", "utente": "...", "password": "..."}' % file)
+        raise ErroreCalendario("caldav-non-valido", '%s non è valido: serve {"server": "https://...", "utente": "...", "password": "..."}' % file)
     return dati
 
 
@@ -207,7 +216,7 @@ class Caldav:
         try:
             return self.client.calendari()
         except (OSError, ValueError) as e:  # Errore di caldav.py è un RuntimeError: il suo messaggio non contiene segreti
-            raise RuntimeError("CalDAV non risponde (%s)" % type(e).__name__)
+            raise ErroreCalendario("caldav-rete", "CalDAV non risponde (%s)" % type(e).__name__)
 
     def nomi(self):
         return list(self._raccolte())
@@ -229,13 +238,13 @@ class Caldav:
             out += [dict(e, calendario=nome) for e in trovati]
             self.avvisi += ["%s: %s" % (nome, a) for a in avvisi]
         if guasti:
-            raise RuntimeError("non riesco a leggere: " + ", ".join(guasti))
+            raise ErroreCalendario("illeggibili", "non riesco a leggere: " + ", ".join(guasti))
         return out
 
     def _raccolta(self, nome):
         raccolte = self._raccolte()
         if nome not in raccolte:
-            raise RuntimeError("calendario sconosciuto: %s" % nome)
+            raise ErroreCalendario("sconosciuto", "calendario sconosciuto: %s" % nome)
         return raccolte[nome]
 
     def crea(self, nome, titolo, inizio, fine):
@@ -251,8 +260,8 @@ PROVIDER = {"macos": Macos, "ics": Ics, "caldav": Caldav}
 def provider(vault=VAULT, piattaforma=None):
     """Il provider scelto in config.json, o None se non c'è un calendario collegato."""
     try:
-        cfg = json.loads((Path(vault) / "config.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        cfg = json.loads((Path(vault) / "config.json").read_text(encoding="utf-8-sig"))  # -sig: a BOM from a Windows editor
+    except (OSError, ValueError, RecursionError):
         cfg = {}
     nome = (cfg.get("calendario") or {}).get("provider") or ("macos" if (piattaforma or sys.platform) == "darwin" else "none")
     if nome == "none":

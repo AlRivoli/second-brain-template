@@ -15,9 +15,11 @@ Con più repo vale lo stato peggiore.
 
 Il riepilogo è un file di un altro repo e un agente può riscriverlo: qui è un dato non fidato. Se ne leggono solo
 quattro numeri e una data, controllati uno per uno; tutto il resto si ignora e un file che non torna vale `da valutare`.
-La cartella riservata non si legge (ADR-001, ADR-002). Tempo O(progetti × repo), un file piccolo per repo.
+La cartella riservata non si legge, in qualunque maiuscola (ADR-001, ADR-002): con config.json illeggibile o di forma
+inattesa non si apre nessun repo. Un repo su un percorso di rete non si tocca. Tempo O(progetti × repo), un file piccolo per repo.
 """
 import argparse
+import importlib.util
 import json
 import re
 import sys
@@ -25,7 +27,11 @@ from datetime import date
 from pathlib import Path
 
 VAULT = Path(__file__).resolve().parent.parent
-PRIVATE_DIRS = {"lavoro", "_private"}
+# The dashboard's reading of the reserved folder and of network paths (percorsi.py), loaded from the file: under -I the
+# script's folder is not on sys.path, and the dashboard loads this script the same way
+_spec = importlib.util.spec_from_file_location("percorsi", Path(__file__).resolve().parent / "percorsi.py")
+percorsi = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(percorsi)
 REPO = re.compile(r"^- \*\*Repo:\*\* (.+)$", re.M)
 HARNESS = re.compile(r"^- \*\*Harness:\*\*(.*)$", re.M)
 DECISIONE = re.compile(r"(adeguare|non adeguare questo progetto) \((\d{4}-\d{2}-\d{2})\)")
@@ -48,8 +54,8 @@ def _data(valore):
 
 def _config(vault):
     try:
-        dati = json.loads((vault / "config.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        dati = json.loads((vault / "config.json").read_text(encoding="utf-8-sig"))  # -sig: a BOM from a Windows editor
+    except (OSError, ValueError, RecursionError):  # RecursionError: JSON nested too deep would break the dashboard's map
         return {}
     return dati if isinstance(dati, dict) else {}
 
@@ -79,18 +85,6 @@ def giorni_validita(config):
     return giorni if type(giorni) is int and 1 <= giorni <= 3650 else GIORNI_VALIDITA
 
 
-def cartelle_riservate(config):
-    """I nomi sotto projects/ che non si leggono: quelli fissi e la cartella scelta al setup (come scripts/verify)."""
-    riservate = set(PRIVATE_DIRS)
-    try:
-        scelta = config["moduli"]["riservata"]["cartella"].replace("\\", "/")
-        if scelta.startswith("projects/") and scelta.count("/") == 1:
-            riservate.add(scelta.split("/")[1])
-    except (KeyError, TypeError, AttributeError):
-        pass
-    return riservate
-
-
 def decisione(testo):
     """(decisione, data) dallo STATE. Una riga assente, doppia o non valida è `da decidere`: la segnala scripts/verify."""
     righe = HARNESS.findall(testo)
@@ -102,7 +96,8 @@ def decisione(testo):
 
 
 def repo_del_progetto(testo):
-    """Le cartelle che esistono tra le righe `Repo:` dello STATE. `nessuno` e il segnaposto del template non contano."""
+    """Le cartelle che esistono tra le righe `Repo:` dello STATE. `nessuno` e il segnaposto del template non contano.
+    Un percorso di rete (o relativo) si scarta sul testo, prima di is_dir(): aprirebbe una connessione verso un altro computer."""
     cartelle = []
     for valore in REPO.findall(testo):
         valore = valore.strip()
@@ -110,7 +105,7 @@ def repo_del_progetto(testo):
             continue
         try:
             cartella = Path(valore).expanduser()
-            if cartella.is_dir():
+            if percorsi.percorso_locale(cartella) and cartella.is_dir():
                 cartelle.append(cartella)
         except (OSError, ValueError, RuntimeError):
             continue  # un percorso che il sistema non sa leggere non è un repo
@@ -153,19 +148,23 @@ def stato_progetti(vault=VAULT, oggi=None):
     """Una voce per progetto, in ordine di nome: {progetto, decisione, data_decisione, stato, repo, report}.
 
     `repo` è quanti repo esistono; `report` sono i numeri del repo che decide lo stato, o None. Dalle voci non escono
-    percorsi né testo preso dai repo.
+    percorsi né testo preso dai repo. Con config.json illeggibile o di forma inattesa la cartella riservata non si conosce:
+    nessuna voce e nessun repo aperto (ADR-002).
     """
     vault = Path(vault)
     oggi = _data(oggi) if isinstance(oggi, str) else (oggi or date.today())
     progetti = vault / "projects"
     if oggi is None or not progetti.is_dir():
         return []
-    config = _config(vault)
-    riservate, giorni = cartelle_riservate(config), giorni_validita(config)
+    try:
+        riservate = percorsi.nomi_riservati(percorsi.scelta_riservata(vault))
+    except RuntimeError:
+        return []
+    giorni = giorni_validita(_config(vault))
     voci = []
     for stato_md in sorted(progetti.glob("*/STATE.md")):
         nome = stato_md.parent.name
-        if nome in riservate or nome.startswith("."):
+        if nome.casefold() in riservate or nome.startswith("."):
             continue
         testo = stato_md.read_text(encoding="utf-8", errors="replace")
         scelta, quando = decisione(testo)
@@ -203,6 +202,12 @@ def main(argv=None):
         oggi = _data(args.oggi)
         if oggi is None:
             ap.error("--oggi vuole una data AAAA-MM-GG che esiste")
+    try:
+        percorsi.scelta_riservata(Path(args.vault))
+    except RuntimeError as e:
+        print(getattr(e, "motivo", None) or "config.json non leggibile o non valido: non posso escludere la cartella riservata, nessun repo letto",
+              file=sys.stderr)
+        return 1
     voci = stato_progetti(args.vault, oggi)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")  # la console di Windows non è UTF-8 per conto suo

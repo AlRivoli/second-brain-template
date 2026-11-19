@@ -68,6 +68,132 @@ class VerifyTest(unittest.TestCase):
             code, out = run_verify(tmp)
             self.assertEqual(code, 0, out)
 
+    def test_dipendenze_rotte_sono_avvisi_e_verify_passa(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), extra={'docs/piano.md': '## A\n- [ ] a dopo:zz\n'})
+            code, out = run_verify(tmp)
+            self.assertEqual(code, 0, out)
+            self.assertIn('docs/piano.md:2: avviso:', out)
+            self.assertIn('OK', out)
+
+    def test_senza_dipendenze_py_un_avviso_e_verify_passa(self):
+        # the module is loaded from next to the script: a copy of verify alone, or next to a broken module
+        for modulo in (None, 'raise ImportError("rotto")\n', 'def x(:\n'):
+            with self.subTest(modulo=modulo), tempfile.TemporaryDirectory() as tmp:
+                vault, cartella = pathlib.Path(tmp) / 'vault', pathlib.Path(tmp) / 'scripts'
+                vault.mkdir()
+                cartella.mkdir()
+                make_vault(vault, extra={'docs/piano.md': '## A\n- [ ] a dopo:zz\n'})
+                (cartella / 'verify').write_bytes(VERIFY.read_bytes())
+                if modulo:
+                    (cartella / 'dipendenze.py').write_text(modulo, encoding='utf-8')
+                result = subprocess.run([sys.executable, str(cartella / 'verify'), str(vault)], capture_output=True, text=True)
+                out = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 0, out)
+                self.assertIn('dipendenze.py assente: controllo delle dipendenze saltato', out)
+                self.assertNotIn('Traceback', out)
+                self.assertTrue(out.rstrip().endswith('OK'), out)
+
+    def test_dipendenze_valide_non_danno_avvisi(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), extra={'docs/piano.md': '## A\n- [x] a id:a\n- [ ] b dopo:a\n'})
+            code, out = run_verify(tmp)
+            self.assertEqual((code, out.strip()), (0, 'OK'))
+
+    def test_obiettivi_non_definiti_sono_avvisi(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), extra={'docs/piano.md': '## A\n- [ ] a obiettivo:zz\n'})
+            code, out = run_verify(tmp)
+            self.assertEqual(code, 0, out)
+            self.assertIn('docs/piano.md:2: avviso: obiettivo:zz', out)
+            self.assertIn('OK', out)
+
+    def test_obiettivo_definito_o_non_usato_non_da_avvisi(self):
+        for extra in ({'docs/piano.md': '## A\n- [ ] a obiettivo:zz\n', 'docs/obiettivi.md': '- zz: Zeta\n'},
+                      {'docs/piano.md': '## A\n- [ ] a\n'},
+                      {'docs/piano.md': '## A\n- [ ] a\n', 'docs/obiettivi.md': '# Obiettivi\n'}):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as tmp:
+                make_vault(pathlib.Path(tmp), extra=extra)
+                code, out = run_verify(tmp)
+                self.assertEqual((code, out.strip()), (0, 'OK'))
+
+    def test_righe_non_valide_di_obiettivi_sono_avvisi(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), extra={'docs/obiettivi.md': '- Zz: X\n'})
+            code, out = run_verify(tmp)
+            self.assertEqual(code, 0, out)
+            self.assertIn('docs/obiettivi.md:1: avviso:', out)
+            self.assertIn('OK', out)
+
+    def test_marcatori_non_validi_di_obiettivi_sono_avvisi(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), extra={'docs/obiettivi.md': '# Obiettivi\n- a: A giorni:xx\n'})
+            code, out = run_verify(tmp)
+            self.assertEqual(code, 0, out)
+            self.assertIn('docs/obiettivi.md:2: avviso: giorni:', out)
+            self.assertTrue(out.rstrip().endswith('OK'), out)
+
+    def test_piano_non_valido_in_config_e_un_avviso(self):
+        # also without plan, goals or Repo lines: the settings are checked on their own
+        senza_repo = GOOD_STATE.replace('- **Repo:** nessuno\n', '')
+        for state in (GOOD_STATE, senza_repo):
+            with self.subTest(repo=state is GOOD_STATE), tempfile.TemporaryDirectory() as tmp:
+                make_vault(pathlib.Path(tmp), state=state, extra={'config.json': '{"piano": {"ore_giorno": 0}}'})
+                code, out = run_verify(tmp)
+                self.assertEqual(code, 0, out)
+                self.assertIn('config.json: avviso: piano.ore_giorno', out)
+                self.assertTrue(out.rstrip().endswith('OK'), out)
+
+    def test_piano_valido_o_config_illeggibile_non_da_avvisi(self):
+        for testo in ('{"piano": {"ore_giorno": 8, "giorni_lavoro": ["lun", "sab"]}}', '{}', 'non json', '[]'):
+            with self.subTest(testo=testo), tempfile.TemporaryDirectory() as tmp:
+                make_vault(pathlib.Path(tmp), extra={'config.json': testo})
+                code, out = run_verify(tmp)
+                self.assertEqual((code, out.strip()), (0, 'OK'))
+
+    def test_repo_doppi_fanno_fallire_verify(self):
+        stato = GOOD_STATE.replace('- **Repo:** nessuno', '- **Repo:** C:\\a\\api\n- **Repo:** D:\\b\\api')
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), state=stato)
+            code, out = run_verify(tmp)
+            self.assertEqual(code, 1, out)
+            self.assertIn('projects/progetto-a/STATE.md: due Repo con lo stesso nome api', out)
+
+    def test_repo_doppi_in_una_cartella_riservata_non_si_leggono(self):
+        stato = GOOD_STATE.replace('- **Repo:** nessuno', '- **Repo:** C:\\a\\api\n- **Repo:** D:\\b\\api')
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), extra={'projects/' 'lavoro/STATE.md': stato})
+            code, out = run_verify(tmp)
+            self.assertEqual((code, out.strip()), (0, 'OK'))
+
+    def test_repo_che_non_si_scrive_come_marcatore_e_un_avviso(self):
+        # the dashboard offers it as a choice but a `repo:` marker (and the route) cannot name it: warn, do not block
+        lungo = 'r' * 61
+        stato = GOOD_STATE.replace('- **Repo:** nessuno', '- **Repo:** C:\\a\\mio repo\n- **Repo:** C:\\a\\%s\n- **Repo:** C:\\a\\api' % lungo)
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), state=stato)
+            code, out = run_verify(tmp)
+            self.assertEqual(code, 0, out)
+            for nome in ('mio repo', lungo):
+                self.assertIn('projects/progetto-a/STATE.md: avviso: repo:%s non si può scrivere come marcatore: rinomina la cartella' % nome, out)
+            self.assertNotIn('repo:api', out)
+            self.assertIn('OK', out)
+
+    def test_repo_ignoto_e_un_avviso(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), extra={'docs/piano.md': '## A\n- [ ] #progetto-a x repo:zz\n'})
+            code, out = run_verify(tmp)
+            self.assertEqual(code, 0, out)
+            self.assertIn('docs/piano.md:2: avviso: repo:zz', out)
+            self.assertIn('OK', out)
+
+    def test_repo_del_progetto_non_da_avvisi(self):
+        stato = GOOD_STATE.replace('- **Repo:** nessuno', '- **Repo:** C:\\a\\api\n- **Repo:** C:\\a\\web')
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), state=stato, extra={'docs/piano.md': '## A\n- [ ] #Progetto-A x repo:web,api\n'})
+            code, out = run_verify(tmp)
+            self.assertEqual((code, out.strip()), (0, 'OK'))
+
     def test_readme_che_non_cita_un_job_o_un_comando(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -165,6 +291,33 @@ class VerifyTest(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn('altra-cartella', out)
 
+    def test_cartella_riservata_con_config_con_bom(self):
+        # a config.json saved by Notepad starts with a BOM: the reserved folder must still be found
+        cfg = '﻿{"moduli": {"riservata": {"attivo": true, "cartella": "projects/confidential-notes"}}}'
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            make_vault(root, extra={'config.json': cfg})
+            (root / 'projects' / 'confidential-notes').mkdir()
+            code, out = run_verify(tmp)
+            self.assertEqual((code, out.strip()), (0, 'OK'))
+
+    def test_cartella_riservata_scritta_con_altre_maiuscole_o_barre(self):
+        # the wizard accepts «Projects\\Confidential-Notes»: it is the folder projects/confidential-notes, whatever its case
+        for scelta, cartella in (('Projects/Confidential-Notes', 'confidential-notes'), ('projects\\\\confidential-notes', 'Confidential-Notes'),
+                                 ('/projects/confidential-notes/', 'confidential-notes')):
+            with self.subTest(scelta=scelta, cartella=cartella), tempfile.TemporaryDirectory() as tmp:
+                root = pathlib.Path(tmp)
+                make_vault(root, extra={'config.json': '{"moduli": {"riservata": {"attivo": true, "cartella": "%s"}}}' % scelta})
+                (root / 'projects' / cartella).mkdir()
+                code, out = run_verify(tmp)
+                self.assertEqual((code, out.strip()), (0, 'OK'))
+
+    def test_config_annidato_troppo_non_esplode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), extra={'config.json': '[' * 100000})
+            code, out = run_verify(tmp)
+            self.assertEqual((code, out.strip()), (0, 'OK'))
+
     def test_vault_vuoto_non_esplode(self):
         with tempfile.TemporaryDirectory() as tmp:
             code, out = run_verify(tmp)
@@ -194,6 +347,25 @@ class VerifyTest(unittest.TestCase):
             code, out = run_verify(tmp)
             self.assertEqual(code, 1)
             self.assertIn('nuovo', out)
+
+    def test_progetti_archiviati_fuori_da_index_e_i_loro_link_restano_validi(self):
+        # the dashboard moves an archived project to projects/_archivio/<name> (or <name>-AAAA-MM-GG[-n]); old notes keep linking it
+        stato = GOOD_STATE.replace('# progetto-a', '# vecchio')
+        nota = ('[[projects/vecchio/STATE|vecchio]] [[projects/doppio/STATE]] [[projects/doppio/decisions]] '
+                '[[projects/sito-2026-01-01/STATE]]\n')   # a project whose own name ends in a date
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(pathlib.Path(tmp), extra={'projects/_archivio/sito-2026-01-01/STATE.md': stato,
+                                                 'projects/_archivio/vecchio/STATE.md': stato,
+                                                 'projects/_archivio/doppio-2026-11-12-2/STATE.md': stato,
+                                                 'projects/_archivio/doppio-2026-11-12-2/decisions.md': 'x',
+                                                 'daily/2026-11-12.md': nota})
+            code, out = run_verify(tmp)
+            self.assertEqual(code, 0, out)
+        with tempfile.TemporaryDirectory() as tmp:  # a project never archived is still a broken link
+            make_vault(pathlib.Path(tmp), extra={'projects/_archivio/vecchio/STATE.md': stato, 'daily/2026-11-12.md': '[[projects/altro/STATE]]\n'})
+            code, out = run_verify(tmp)
+            self.assertEqual(code, 1)
+            self.assertIn('projects/altro/STATE', out)
 
     def test_data_index_diversa_da_state(self):
         index = GOOD_INDEX.replace('2026-10-22', '2026-10-01')

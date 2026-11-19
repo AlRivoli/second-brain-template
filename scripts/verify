@@ -3,9 +3,14 @@
 
 Uso: scripts/verify [RADICE_VAULT]
 Exit 0 se tutto passa, 1 se trova problemi. Stampa "file: problema" per ogni problema.
+Le dipendenze rotte e i `repo:` non validi di docs/piano.md e i problemi di docs/obiettivi.md sono avvisi ("file:riga: avviso: ..."): si stampano ma non cambiano l'exit.
+Anche le impostazioni `piano` di config.json non valide sono avvisi ("config.json: avviso: ..."): valgono i default.
+Un repo il cui nome (la cartella della riga Repo) non si può scrivere come marcatore `repo:` è un avviso.
+Due righe Repo con lo stesso nome nello STATE di un progetto sono invece un problema.
 Nessun modello, solo lettura dei file.
 """
 import datetime
+import importlib.util
 import json
 import pathlib
 import re
@@ -14,6 +19,9 @@ import sys
 
 MAX_STATE_LINES = 20  # righe non vuote
 PRIVATE_DIRS = {'lavoro', '_private'}  # cartelle riservate: non devono stare in INDEX
+ARCHIVE_DIR = '_archivio'  # projects/_archivio/<nome>: progetti archiviati dalla dashboard, fuori da INDEX
+# la cartella che la dashboard dà a un progetto archiviato: il nome, o il nome con la data (e un contatore) se era già preso
+ARCHIVED_NAME = re.compile(r'(.+?)(?:-\d{4}-\d{2}-\d{2}(?:-\d+)?)?')
 SKIP_DIRS = {'.git', '.obsidian', '.claude', '.superpowers', 'templates', 'template', 'node_modules'}  # template/: il vault di esempio, ha il suo verify
 # Link Obsidian; il pipe può essere escapato come \| dentro le tabelle.
 WIKILINK = re.compile(r'\[\[((?:\\\||[^\]])+)\]\]')
@@ -23,6 +31,7 @@ CODE_SPAN = re.compile(r'`[^`]*`')
 UPDATED = re.compile(r'\*\*Aggiornato:\*\*\s*(\d{4}-\d{2}-\d{2})')
 # La decisione sull'harness per agenti, una riga facoltativa dello STATE (la legge scripts/harness-progetti.py)
 HARNESS = re.compile(r'^- \*\*Harness:\*\*(.*)$', re.M)
+REPO = re.compile(r'^- \*\*Repo:\*\* (.+)$', re.M)  # la stessa regex del server della dashboard
 HARNESS_VALORE = re.compile(r'da decidere|(?:adeguare|non adeguare questo progetto) \((\d{4}-\d{2}-\d{2})\)')
 HARNESS_AMMESSI = '"da decidere", "adeguare (AAAA-MM-GG)", "non adeguare questo progetto (AAAA-MM-GG)"'
 TIPI = {'frontend', 'backend', 'fullstack', 'altro'}  # colonna "tipo" di scaffold/registro.md
@@ -67,6 +76,7 @@ def harness_valido(valore):
 
 
 def check_projects(root, problems):
+    """Controlla STATE e INDEX. Ritorna {progetto: righe Repo dello STATE} per i progetti di INDEX."""
     template = root / 'templates' / 'STATE.md'
     required = headings(template) if template.exists() else []
 
@@ -89,20 +99,24 @@ def check_projects(root, problems):
 
     projects_dir = root / 'projects'
     private_dirs = set(PRIVATE_DIRS)
-    try:  # la cartella riservata scelta al setup (moduli.riservata.cartella), se sta dentro projects/
-        scelta = json.loads((root / 'config.json').read_text(encoding='utf-8'))['moduli']['riservata']['cartella']
-        if scelta.replace('\\', '/').startswith('projects/') and scelta.count('/') == 1:
-            private_dirs.add(scelta.split('/')[1])
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        pass
+    try:  # la cartella riservata scelta al setup (moduli.riservata.cartella), se sta dentro projects/, in qualunque maiuscola e con barre di ogni tipo
+        parti = [p for p in json.loads((root / 'config.json').read_text(encoding='utf-8-sig'))['moduli']['riservata']['cartella']
+                 .replace('\\', '/').split('/') if p]
+        if len(parti) == 2 and parti[0].casefold() == 'projects':
+            private_dirs.add(parti[1])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError):
+        pass  # verify is not a cloud boundary: a broken config.json keeps the fixed folders, it never crashes the check
+    private_dirs = {d.casefold() for d in private_dirs}  # NTFS and APFS: «Confidential-Notes» is the same folder
     folders = []
     if projects_dir.exists():
         folders = sorted(p.name for p in projects_dir.iterdir()
-                         if p.is_dir() and not p.name.startswith('.') and p.name not in private_dirs)
+                         if p.is_dir() and not p.name.startswith('.') and p.name.casefold() not in private_dirs
+                         and p.name != ARCHIVE_DIR)
 
     for name in rows:
         if not (projects_dir / name).is_dir():
             problems.append(f'projects/INDEX.md: riga "{name}" senza cartella')
+    percorsi = {}
     for name in folders:
         if name not in rows:
             problems.append(f'projects/{name}: cartella non presente in INDEX.md')
@@ -112,6 +126,8 @@ def check_projects(root, problems):
             problems.append(f'{rel}: manca')
             continue
         text = read(state)
+        if name in rows:
+            percorsi[name] = REPO.findall(text)
         lines = len([line for line in text.splitlines() if line.strip()])
         if lines > MAX_STATE_LINES:
             problems.append(f'{rel}: {lines} righe non vuote, massimo {MAX_STATE_LINES}')
@@ -130,6 +146,7 @@ def check_projects(root, problems):
             problems.append(f'{rel}: manca "Aggiornato"')
         elif rows.get(name) and updated.group(1) != rows[name]:
             problems.append(f'{rel}: Aggiornato {updated.group(1)} diverso da INDEX ({rows[name]})')
+    return percorsi
 
 
 def check_wikilinks(root, problems):
@@ -140,7 +157,14 @@ def check_wikilinks(root, problems):
             known.add(p.name.lower())
             known.add(p.stem.lower())
             if p.suffix == '.md':
-                known.add(p.relative_to(root).with_suffix('').as_posix().lower())
+                rel = p.relative_to(root).with_suffix('')
+                known.add(rel.as_posix().lower())
+                # una nota di un progetto archiviato tiene validi i link scritti quando stava in projects/<nome>/; anche il
+                # nome intero della cartella, perché un progetto può chiamarsi già con una data in fondo
+                parti = rel.parts
+                if len(parti) > 3 and parti[:2] == ('projects', ARCHIVE_DIR):
+                    for nome in {parti[2], ARCHIVED_NAME.fullmatch(parti[2]).group(1)}:
+                        known.add(pathlib.PurePosixPath('projects', nome, *parti[3:]).as_posix().lower())
     for path in root.rglob('*.md'):
         if is_skipped(path, root):
             continue
@@ -313,18 +337,66 @@ def check_errori_ricorrenti(root, problems):
                 problems.append(f'CLAUDE.md:{number}: riga di "Recurring errors" senza data: deve cominciare con "- AAAA-MM-GG"')
 
 
+def check_dipendenze(root, avvisi, problems, percorsi):
+    """I problemi di docs/piano.md (id doppio, dopo: rotto, ciclo, obiettivo: e repo: non validi), di docs/obiettivi.md e di config.json → piano sono avvisi: non bloccano verify.
+
+    Fa eccezione un nome di repo doppio nello STATE di un progetto (`percorsi`, da check_projects): tocca l'allowlist dei repo, è un problema.
+    Il modulo viene sempre da accanto allo script, anche se la radice del vault è un'altra. Senza i tre file e senza righe Repo non c'è nulla da controllare.
+    """
+    piano = root / 'docs' / 'piano.md'
+    file_obiettivi = root / 'docs' / 'obiettivi.md'
+    config = root / 'config.json'
+    if not piano.is_file() and not file_obiettivi.is_file() and not config.is_file() and not any(percorsi.values()):
+        return
+    # A missing or broken module skips this check with a warning: it never stops verify or changes its exit code.
+    try:
+        spec = importlib.util.spec_from_file_location('dipendenze', pathlib.Path(__file__).resolve().parent / 'dipendenze.py')
+        dipendenze = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(dipendenze)
+    except Exception:
+        avvisi.append('docs/piano.md: avviso: dipendenze.py assente: controllo delle dipendenze saltato')
+        return
+    repo = {}
+    for progetto, righe in percorsi.items():
+        nomi, doppi = dipendenze.nomi_repo(righe)
+        problems.extend(f'projects/{progetto}/STATE.md: due Repo con lo stesso nome {nome}: rinomina una cartella o togli una riga' for nome in doppi)
+        # The dashboard offers such a repo as a choice, but no `repo:` marker can name it and the launch route refuses the name
+        avvisi.extend(f'projects/{progetto}/STATE.md: avviso: repo:{nome} non si può scrivere come marcatore: rinomina la cartella'
+                      for nome in nomi if not re.fullmatch(dipendenze._REPO, nome))
+        repo[progetto.lower()] = set(nomi)  # i tag del piano sono in minuscolo
+    if config.is_file():
+        try:  # config.json is the wizard's file: an unreadable one is not this check's business
+            impostazioni = json.loads(config.read_text(encoding='utf-8-sig'))
+        except (OSError, ValueError, RecursionError):  # RecursionError: JSON nested too deep
+            impostazioni = {}
+        avvisi.extend(f'config.json: avviso: {messaggio}' for messaggio in dipendenze.impostazioni_piano(impostazioni)[1])
+    voci = dipendenze.leggi_voci(read(piano)) if piano.is_file() else []
+    obiettivi = None
+    if file_obiettivi.is_file():
+        obiettivi, trovati = dipendenze.leggi_obiettivi(read(file_obiettivi))
+        avvisi.extend(f'docs/obiettivi.md:{riga}: avviso: {messaggio}' for riga, messaggio in trovati)
+    elif any('obiettivo' in v['marcatori'] for v in voci):
+        # No file at all: every use of `obiettivo:` is undefined and gets a warning
+        obiettivi = {}
+    avvisi.extend(f'docs/piano.md:{riga}: avviso: {messaggio}' for riga, messaggio in dipendenze.problemi(voci, obiettivi, repo))
+
+
 def main(argv):
     root = pathlib.Path(argv[1]) if len(argv) > 1 else pathlib.Path(__file__).resolve().parent.parent
     problems = []
-    check_projects(root, problems)
+    avvisi = []
+    percorsi = check_projects(root, problems)
     check_errori_ricorrenti(root, problems)
     check_wikilinks(root, problems)
     check_readme(root, problems)
     check_riferimenti_script(root, problems)
     check_adr_citati(root, problems)
     check_scaffold(root, problems)
+    check_dipendenze(root, avvisi, problems, percorsi)
     for problem in problems:
         print(problem)
+    for avviso in avvisi:
+        print(avviso)
     if problems:
         return 1
     print('OK')

@@ -125,7 +125,7 @@ class ElaboraTest(unittest.TestCase):
                     e.da_elaborare(vault)
                 self.assertEqual(str(c.exception), e.CONFIG_ILLEGGIBILE)
                 vero = e.da_elaborare
-                with mock.patch.object(e, "LOGS", vault), mock.patch.object(e, "da_elaborare", lambda: vero(vault)), \
+                with mock.patch.object(e, "LOGS", vault), mock.patch.object(e, "da_elaborare", lambda vero=vero, vault=vault: vero(vault)), \
                         mock.patch.object(e, "elabora", side_effect=AssertionError("richiesta elaborata")), \
                         contextlib.redirect_stderr(io.StringIO()) as err:
                     self.assertEqual(e.main(), 1)

@@ -27,7 +27,7 @@ def senza_rete(*moduli):
     """Path.exists/is_dir/is_file/resolve fail on a network path; Z: is a mapped share in the given copies of percorsi."""
     pila = contextlib.ExitStack()
     for nome in ("exists", "is_dir", "is_file", "resolve"):
-        def guardia(percorso, *a, _vero=getattr(Path, nome), **k):
+        def guardia(percorso, *a, _vero=getattr(Path, nome), **k):  # noqa: B008 - lega il metodo di questo giro del ciclo
             if str(percorso).startswith(("\\\\", "//")) or percorso.drive.upper() == "Z:":
                 raise AssertionError("disco di rete toccato: %s" % percorso)
             return _vero(percorso, *a, **k)

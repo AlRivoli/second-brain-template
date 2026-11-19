@@ -76,7 +76,8 @@ class HtmlDashboard(unittest.TestCase):
         self.assertNotIn("innerHTML", js)
 
     def test_archivia_progetto_sempre_dietro_una_conferma(self):
-        js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")
+        js = (D / "mappa.js").read_text(encoding="utf-8")
+        css = (D / "dashboard.css").read_text(encoding="utf-8")
         corpo = js[js.index("function archivia(n)"):js.index("function decidiHarness")]
         for atteso in ("inProva()", "/api/mappa/archivia", "showModal()", "annulla.focus()", "'Archivia'", "'Annulla'",
                        "'Archiviare ' + n.nome + '? La riga sparisce da INDEX e la cartella va in projects/_archivio/' + n.nome + '. I task del piano restano.'"):
@@ -94,7 +95,8 @@ class HtmlDashboard(unittest.TestCase):
             self.assertIn(atteso, aiuto, atteso)
 
     def test_imposta_cartella_di_un_progetto_senza_repo(self):
-        js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")
+        js = (D / "mappa.js").read_text(encoding="utf-8")
+        css = (D / "dashboard.css").read_text(encoding="utf-8")
         corpo = js[js.index("function impostaCartella(n)"):js.index("function decidiHarness")]
         for atteso in ("inProva()", "/api/mappa/cartella", "maxlength: '400'", "r.stato === 400", "CAMPO_NON_VALIDO[", "showModal()"):
             self.assertIn(atteso, corpo, atteso)
@@ -107,7 +109,8 @@ class HtmlDashboard(unittest.TestCase):
     def test_le_animazioni_solo_per_un_cambio_voluto(self):
         # motion only for a change the user caused: one WAAPI helper, ease-out, transform/opacity, nothing under reduced motion;
         # no CSS keyframe on the satellites or the band, which would replay on every redraw (the first paint included)
-        js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")
+        js = (D / "mappa.js").read_text(encoding="utf-8")
+        css = (D / "dashboard.css").read_text(encoding="utf-8")
         corpo = lambda nome: js[js.index(nome):js.index("\n  }", js.index(nome))]
         aiuto = corpo("function anima(")
         self.assertIn("MOTO_RIDOTTO.matches", aiuto)
@@ -120,7 +123,8 @@ class HtmlDashboard(unittest.TestCase):
             self.assertNotIn(vecchio, css, vecchio)
         # satellites fan in (staggered) and out, the band reveals and folds, the panel fades, the thread draws in
         sat = corpo("function disegnaSatelliti")
-        self.assertIn("anima(dentro", sat); self.assertIn("esce(", sat)
+        self.assertIn("anima(dentro", sat)
+        self.assertIn("esce(", sat)
         self.assertIn("if (rivelato) anima(G", js)
         self.assertIn("esce(", js[js.index("const premi = ()"):js.index("P.addEventListener('click', premi)")])
         self.assertIn("strokeDashoffset", corpo("function filo"))
@@ -176,13 +180,15 @@ class HtmlDashboard(unittest.TestCase):
         self.assertIn("nota-mappa", css)                                # la legenda del numero resta visibile anche sotto i 760px
 
     def test_la_mappa_disegna_quattro_stati_e_il_filo(self):
-        js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")
+        js = (D / "mappa.js").read_text(encoding="utf-8")
+        css = (D / "dashboard.css").read_text(encoding="utf-8")
         for atteso in ("st-pronto", "st-in_attesa", "mappa-dipendenze", "statoVisivo", "Pronti da avviare", "In attesa"):
             self.assertIn(atteso, js)
         self.assertRegex(css, r"\.arco\.st-in_attesa[^}]*stroke-dasharray")  # in attesa si legge dal tratteggio, non solo dal colore (il tratteggio dell'harness esiste già e non conta)
 
     def test_la_mappa_disegna_gli_obiettivi(self):
-        js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")
+        js = (D / "mappa.js").read_text(encoding="utf-8")
+        css = (D / "dashboard.css").read_text(encoding="utf-8")
         for atteso in ("mappa-obiettivi", "'obiettivi', 'Obiettivi'", "obiettivo:", "obiettivoPer", "non definito", "Nessun passo nel piano con questo obiettivo"):
             self.assertIn(atteso, js)
         self.assertRegex(css, r"\.obiettivo\b")
@@ -230,7 +236,8 @@ class HtmlDashboard(unittest.TestCase):
 
     def test_il_task_porta_al_suo_obiettivo(self):
         # a goal folded behind a pill is reachable from its task rows: a native button, so Enter and Space work
-        js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")
+        js = (D / "mappa.js").read_text(encoding="utf-8")
+        css = (D / "dashboard.css").read_text(encoding="utf-8")
         aiuto = js[js.index("function segnoObiettivo"):js.index("\n  }\n", js.index("function segnoObiettivo"))]
         for atteso in ("bottone(", "'obiettivo: '", "scegliObiettivo(o.slug)", "obiettiviSvg.get(o.slug)", ".focus()", "isConnected", "fuocoAlPannello()"):
             self.assertIn(atteso, aiuto, atteso)
@@ -253,7 +260,8 @@ class HtmlDashboard(unittest.TestCase):
         self.assertLess(corpo.index("getComputedTextLength()"), corpo.index("for (const o of layout("))   # before the nodes are placed
 
     def test_la_mappa_mostra_scadenze_rischio_e_fascia_comprimibile(self):
-        js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")
+        js = (D / "mappa.js").read_text(encoding="utf-8")
+        css = (D / "dashboard.css").read_text(encoding="utf-8")
         for atteso in ("'scade '", "'a rischio'", "'scaduto'", "'entro il '", "'senza stima'", " completati'", " altri'",
                        "Le date ipotizzano che i task indipendenti procedano in parallelo.", "aria-expanded"):
             self.assertIn(atteso, js, atteso)
@@ -278,7 +286,9 @@ class HtmlDashboard(unittest.TestCase):
 
     def test_la_fascia_degli_obiettivi_si_ripiega(self):
         # fascia() runs alone in node, with stubs for the band state: what is drawn, in which order, and what each pill hides
-        import shutil, subprocess, tempfile
+        import shutil
+        import subprocess
+        import tempfile
         if not shutil.which("node"):
             self.skipTest("node non c'è")
         js = (D / "mappa.js").read_text(encoding="utf-8")
@@ -315,7 +325,9 @@ class HtmlDashboard(unittest.TestCase):
 
     def test_il_grafo_dell_obiettivo_va_a_righe(self):
         # the goal graph's pure layout runs alone in node, on realistic plan shapes: rows, ghosts, cycles, done, wraps
-        import shutil, subprocess, tempfile
+        import shutil
+        import subprocess
+        import tempfile
         if not shutil.which("node"):
             self.skipTest("node non c'è")
         js = (D / "mappa.js").read_text(encoding="utf-8")
@@ -402,7 +414,8 @@ console.log(JSON.stringify(out));
         self.assertEqual(out["vuoto"], [0, 0, 114])
 
     def test_la_vista_del_grafo_si_apre_e_si_chiude(self):
-        js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")
+        js = (D / "mappa.js").read_text(encoding="utf-8")
+        css = (D / "dashboard.css").read_text(encoding="utf-8")
         corpo = lambda nome: js[js.index(nome):js.index("\n  }\n", js.index(nome))]
         # the band box opens the graph; the panel chip only selects the goal
         self.assertIn("G.addEventListener('click', () => apriGrafo(o.slug));", js)
@@ -433,7 +446,8 @@ console.log(JSON.stringify(out));
 
     def test_in_ritardo_e_bloccato_resta_rosso(self):
         # a late task that waits is never the next action: the spec wants it flagged, and the grey of «in attesa» must not hide the red
-        js = (D / "mappa.js").read_text(encoding="utf-8"); css = (D / "dashboard.css").read_text(encoding="utf-8")
+        js = (D / "mappa.js").read_text(encoding="utf-8")
+        css = (D / "dashboard.css").read_text(encoding="utf-8")
         self.assertIn("in ritardo e bloccato", js[js.index("function motivi"):js.index("function gruppi")])
         self.assertRegex(css, r"\.sat\.st-in_attesa\.ritardo text \{ fill: var\(--late\)")
         self.assertRegex(css, r"\.task\.st-in_attesa \.task-testo\.ritardo \{ color: var\(--late\)")

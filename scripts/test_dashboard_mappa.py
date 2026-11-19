@@ -192,7 +192,7 @@ def senza_disco_di_rete():
     """Patches Path.exists, is_dir and resolve to fail on a network path (\\\\srv, //srv) or the mapped drive Z: of the tests."""
     pila = contextlib.ExitStack()
     for nome in ("exists", "is_dir", "is_file", "resolve"):
-        def guardia(percorso, *a, _vero=getattr(server.Path, nome), **k):
+        def guardia(percorso, *a, _vero=getattr(server.Path, nome), **k):  # noqa: B008 - lega il metodo di questo giro del ciclo
             if str(percorso).startswith(("\\\\", "//")) or percorso.drive.upper() == "Z:":
                 raise AssertionError("disco di rete toccato: %s" % percorso)
             return _vero(percorso, *a, **k)

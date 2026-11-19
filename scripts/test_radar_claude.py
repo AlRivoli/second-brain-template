@@ -81,7 +81,7 @@ class RadarClaude(unittest.TestCase):
                 (self.v / "config.json").write_text(testo, encoding="utf-8")
                 viste = []
                 with self.assertRaises(RuntimeError):
-                    rc.radar_claude(self.v, lambda i, t: viste.append(t) or json.dumps({"schede": []}))
+                    rc.radar_claude(self.v, lambda i, t: viste.append(t) or json.dumps({"schede": []}))  # noqa: B023 - chiamata subito, nello stesso giro del ciclo
                 self.assertEqual(viste, [])
 
     def test_main_esce_con_errore_se_config_illeggibile(self):

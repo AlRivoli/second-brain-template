@@ -572,7 +572,8 @@ console.log(JSON.stringify(out));
         self.assertIn("'Sezioni della configurazione'", js)
 
     def test_senza_tag_come_il_server(self):
-        import shutil, subprocess
+        import shutil
+        import subprocess
         if not shutil.which("node"):
             self.skipTest("node non c'è")
         prova = ("global.window={};global.document={};eval(require('fs').readFileSync(process.argv[1],'utf8'));"
@@ -584,7 +585,8 @@ console.log(JSON.stringify(out));
             {"testo": "url#frag", "tag": None}, {"testo": "Foo bar", "tag": "beta"}])
 
     def _comp(self, espressione):
-        import shutil, subprocess
+        import shutil
+        import subprocess
         if not shutil.which("node"):
             self.skipTest("node non c'è")
         prova = ("global.window={};global.document={};eval(require('fs').readFileSync(process.argv[1],'utf8'));"

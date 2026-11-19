@@ -427,7 +427,7 @@ def main(argv=None, radice=RADICE):
         print(msg["aborted"])
         return 1
     try:
-        for i, x in azioni:
+        for _, x in azioni:
             moduli.applica(x, radice)
     except ValueError as e:
         sys.exit(str(e))

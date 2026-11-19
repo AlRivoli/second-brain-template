@@ -1,7 +1,5 @@
 """Cose che si sono rotte su Windows provando il template: comandi solo macOS e separatore del PATH."""
 import importlib.util
-import os
-import subprocess
 import unittest
 from pathlib import Path
 from unittest import mock

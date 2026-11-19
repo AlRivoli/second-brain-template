@@ -1,7 +1,7 @@
 import importlib.util
 import tempfile
 import unittest
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 spec = importlib.util.spec_from_file_location("percorsi", Path(__file__).resolve().parent / "percorsi.py")
 percorsi = importlib.util.module_from_spec(spec)

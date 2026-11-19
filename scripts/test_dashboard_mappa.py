@@ -2112,7 +2112,7 @@ class ArchiviaProgettoTest(unittest.TestCase):
                     "| [[projects/confidential-notes/STATE\\|confidential-notes]] | Stack | Stato | alta | 2026-11-09 |\n")
         (v / "projects" / "confidential-notes").mkdir()
         prima = indice.read_bytes()
-        casi = [(n, "nome") for n in ("Progetto-B", "../progetto-b", "progetto-b/..", "-x", "x" * 61, "", None, 5, "_archivio", "con")]
+        casi = [(n, "nome") for n in ("../progetto-b", "progetto b", ".nascosto", "fine.", "a|b", "CON", "progetto-b/..", "-x", "x" * 61, "", None, 5, "_archivio", "con")]
         casi += [(n, "lavoro") for n in ("lavoro", RISERVATA, "confidential-notes", "Confidential-Notes", "cliente")]
         for nome, codice in casi:
             with self.subTest(nome=nome), self.assertRaises(ValueError) as c:
@@ -2123,6 +2123,17 @@ class ArchiviaProgettoTest(unittest.TestCase):
         self.assertEqual(indice.read_bytes(), prima)
         self.assertTrue((v / "projects" / "confidential-notes").is_dir())
         self.assertFalse((v / "projects" / "_archivio").exists())
+
+    def test_archivia_un_nome_scritto_a_mano_con_maiuscole(self):
+        # INDEX accepts any name; a row added by hand like MyApp must be archivable too
+        v = vault_verificabile(self)
+        (v / "projects" / "MyApp").mkdir()
+        (v / "projects" / "MyApp" / "STATE.md").write_text(verify_test.GOOD_STATE.replace("# progetto-a", "# MyApp"), encoding="utf-8")
+        with (v / "projects" / "INDEX.md").open("a", encoding="utf-8") as i:
+            i.write("| [[projects/MyApp/STATE|MyApp]] | Python | in corso | media | 2026-10-22 |\n")
+        esito = server.archivia_progetto("MyApp", vault=v, oggi="2026-11-12")
+        self.assertEqual(esito["archivio"], "projects/_archivio/MyApp")
+        self.assertNotIn("MyApp", (v / "projects" / "INDEX.md").read_text(encoding="utf-8"))
 
     def test_config_illeggibile_non_archivia(self):
         v = vault_verificabile(self)
@@ -2346,7 +2357,7 @@ class ImpostaCartellaTest(unittest.TestCase):
             i.write("| [[projects" "/" "lavoro" "/cliente/STATE\\|cliente]] | Stack | Stato | alta | 2026-11-09 |\n")
         for nome in ("lavoro", RISERVATA, "confidential-notes", "cliente"):
             self.rifiutata(str(self.repo), "lavoro", nome)
-        for nome in ("Progetto-B", "../progetto-b", "", None, 5):
+        for nome in ("progetto b", "_archivio", "../progetto-b", "", None, 5):
             self.rifiutata(str(self.repo), "nome", nome)
         with self.assertRaises(LookupError):
             self.imposta(str(self.repo), "manca")

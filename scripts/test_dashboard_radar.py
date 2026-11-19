@@ -16,7 +16,7 @@ _spec.loader.exec_module(server)
 SCHEDA_UN_PASSO = (
     "# Radar del 2026-11-13\n\n## Da leggere\n\n"
     "### [nuxt/nuxt v4.6.4](https://github.com/nuxt/nuxt/releases/tag/v4.6.4)\n"
-    "- **Progetti:** [[projects/my-book-club/STATE|my-book-club]], [[projects/sommoPhoto/STATE|sommoPhoto]]\n"
+    "- **Progetti:** [[projects/progetto-web/STATE|progetto-web]], [[projects/progetto-app/STATE|progetto-app]]\n"
     "- **Tipo:** sicurezza\n- **Cos'è:** Otto avvisi corretti.\n- **Cosa farci:** Aggiornare Nuxt.\n- **Costo per provarlo:** mezz'ora\n\n"
 )
 
@@ -31,7 +31,7 @@ class RadarUnPassoTest(unittest.TestCase):
     def test_la_scheda_ha_progetti_tipo_e_campi(self):
         d, f = self.prepara()
         c = server.radar(d, f)["daLeggere"][0]
-        self.assertEqual(c["progetti"], ["my-book-club", "sommoPhoto"])
+        self.assertEqual(c["progetti"], ["progetto-web", "progetto-app"])
         self.assertEqual((c["tipo"], c["cosa"], c["azione"], c["costo"]), ("sicurezza", "Otto avvisi corretti.", "Aggiornare Nuxt.", "mezz'ora"))
         self.assertIsNone(c["giudizio"])
 
@@ -44,7 +44,7 @@ class RadarUnPassoTest(unittest.TestCase):
         r = server.radar(d, f)
         self.assertEqual((r["utili"], r["nonUtili"]), (0, 1))
         riga = json.loads(f.read_text(encoding="utf-8").splitlines()[0])
-        self.assertEqual((riga["progetto"], riga["motivo"], riga["giudizio"]), ("my-book-club, sommoPhoto", "Otto avvisi corretti.", "utile"))
+        self.assertEqual((riga["progetto"], riga["motivo"], riga["giudizio"]), ("progetto-web, progetto-app", "Otto avvisi corretti.", "utile"))
 
     def test_i_voti_non_si_incrociano(self):
         d, f = self.prepara()

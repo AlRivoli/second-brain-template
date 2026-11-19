@@ -151,13 +151,14 @@ class VerifyTest(unittest.TestCase):
                 code, out = run_verify(tmp)
                 self.assertEqual((code, out.strip()), (0, 'OK'))
 
-    def test_repo_doppi_fanno_fallire_verify(self):
+    def test_repo_doppi_sono_un_avviso_non_fermano_verify(self):
+        # the launcher already refuses a twin name: failing verify would only stop the nightly commit
         stato = GOOD_STATE.replace('- **Repo:** nessuno', '- **Repo:** C:\\a\\api\n- **Repo:** D:\\b\\api')
         with tempfile.TemporaryDirectory() as tmp:
             make_vault(pathlib.Path(tmp), state=stato)
             code, out = run_verify(tmp)
-            self.assertEqual(code, 1, out)
-            self.assertIn('projects/progetto-a/STATE.md: due Repo con lo stesso nome api', out)
+            self.assertEqual(code, 0, out)
+            self.assertIn('projects/progetto-a/STATE.md: avviso: due Repo con lo stesso nome api', out)
 
     def test_repo_doppi_in_una_cartella_riservata_non_si_leggono(self):
         stato = GOOD_STATE.replace('- **Repo:** nessuno', '- **Repo:** C:\\a\\api\n- **Repo:** D:\\b\\api')

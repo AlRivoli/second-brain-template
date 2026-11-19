@@ -340,7 +340,7 @@ def check_errori_ricorrenti(root, problems):
 def check_dipendenze(root, avvisi, problems, percorsi):
     """I problemi di docs/piano.md (id doppio, dopo: rotto, ciclo, obiettivo: e repo: non validi), di docs/obiettivi.md e di config.json → piano sono avvisi: non bloccano verify.
 
-    Fa eccezione un nome di repo doppio nello STATE di un progetto (`percorsi`, da check_projects): tocca l'allowlist dei repo, è un problema.
+    Anche un nome di repo doppio nello STATE di un progetto (`percorsi`, da check_projects) è un avviso: l'avvio lo rifiuta già.
     Il modulo viene sempre da accanto allo script, anche se la radice del vault è un'altra. Senza i tre file e senza righe Repo non c'è nulla da controllare.
     """
     piano = root / 'docs' / 'piano.md'
@@ -359,7 +359,8 @@ def check_dipendenze(root, avvisi, problems, percorsi):
     repo = {}
     for progetto, righe in percorsi.items():
         nomi, doppi = dipendenze.nomi_repo(righe)
-        problems.extend(f'projects/{progetto}/STATE.md: due Repo con lo stesso nome {nome}: rinomina una cartella o togli una riga' for nome in doppi)
+        # A twin name is never offered nor launched (nomi_repo leaves it out): a warning, so the nightly commit is not stopped
+        avvisi.extend(f'projects/{progetto}/STATE.md: avviso: due Repo con lo stesso nome {nome}: rinomina una cartella o togli una riga' for nome in doppi)
         # The dashboard offers such a repo as a choice, but no `repo:` marker can name it and the launch route refuses the name
         avvisi.extend(f'projects/{progetto}/STATE.md: avviso: repo:{nome} non si può scrivere come marcatore: rinomina la cartella'
                       for nome in nomi if not re.fullmatch(dipendenze._REPO, nome))

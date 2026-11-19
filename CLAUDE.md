@@ -73,7 +73,7 @@ Delegate from the main session. Subagents do not start others (enforced by leavi
 
 ## Recurring errors
 
-The log of corrected mistakes ([ADR-013](docs/adr/ADR-013-learning-loop.md)). One dated line per mistake, proposed by `/chiudi-giornata` and written only after a yes:
+The log of corrected mistakes ([ADR-015](docs/adr/ADR-015-learning-loop.md)). One dated line per mistake, proposed by `/chiudi-giornata` and written only after a yes:
 
 `- YYYY-MM-DD · what happened · causa: why · layer: nessuno | regola <file> | check <name>`
 

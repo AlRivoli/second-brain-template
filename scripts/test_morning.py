@@ -39,6 +39,21 @@ class Morning(unittest.TestCase):
             rc = morning.morning(self.vault, run, env or {}, date(2026, 11, 3), self.app, segnala=lambda *a: self.segnalazioni.append(a), **kw)
         return rc, buf.getvalue()
 
+    def test_task_pronti_nel_prompt(self):
+        rc, _ = self.vai(self.lancia(), pronti=lambda: "- progetto · piano · Task 1 «x» — basso → deepseek")
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.chiamate[0][-1], "/morning Task pronti dallo smistatore:\n- progetto · piano · Task 1 «x» — basso → deepseek")
+
+    def test_senza_task_pronti_resta_morning(self):
+        self.vai(self.lancia(), pronti=lambda: "")
+        self.assertEqual(self.chiamate[0][-1], "/morning")
+
+    def test_smistatore_rotto_non_ferma_il_brief(self):
+        def rotto():
+            raise OSError("manca")
+        rc, _ = self.vai(self.lancia(), pronti=rotto)
+        self.assertEqual((rc, self.chiamate[0][-1]), (0, "/morning"))
+
     def test_dry_run_stampa_e_non_esegue(self):
         rc, out = self.vai(self.lancia(), {"MORNING_DRY_RUN": "1"})
         self.assertEqual((rc, self.chiamate), (0, []))

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Conta i blocchi dell'hook delle regole: quante volte ogni regola ha negato o chiesto conferma (ADR-013).
+"""Conta i blocchi dell'hook delle regole: quante volte ogni regola ha negato o chiesto conferma (ADR-015).
 
 Uso: scripts/blocchi-regole.py [--giorni N] [--oggi AAAA-MM-GG] [--json] [--log FILE]
      Una riga per regola, dalla più frequente: `force-push: 2 nega`. Senza blocchi non stampa nulla su stdout.

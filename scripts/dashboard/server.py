@@ -55,7 +55,7 @@ BLOCCO_PIANO = threading.Lock()  # lettura, modifica e scrittura di piano.md e s
 BLOCCO_CONFIG = threading.Lock()  # un solo cambio alla volta ai file globali di Claude
 PORTA = 8765
 HOST_OK = {"127.0.0.1:%d" % PORTA, "localhost:%d" % PORTA}
-JOB = ["morning", "chiusura", "n8n", "pulizia", "ollama"]
+JOB = ["morning", "chiusura", "pulizia", "ollama"]
 RIGA_PROGETTO = re.compile(r"^\| \[\[projects/([^/\\|]+)/STATE")
 VOCE_INBOX = re.compile(r"^- \[([^\]]+)\]\(([^)]+)\)")
 SEZIONE = re.compile(r"^## (.+)$")
@@ -372,7 +372,7 @@ def ollama():
 
 
 def prossimo_radar(oggi):
-    """Il prossimo lunedì alle 07:00, quando n8n scrive la nuova inbox."""
+    """Il prossimo lunedì alle 07:00, quando feed.py raccoglie la nuova inbox."""
     giorni = (7 - oggi.weekday()) % 7 or 7
     return (oggi + timedelta(days=giorni)).strftime("%Y-%m-%d") + " 07:00"
 

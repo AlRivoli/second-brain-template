@@ -16,6 +16,10 @@
 
 <novità da `inbox/` e `radar/` non ancora lette, con link>
 
+## Pronti a partire
+
+<task dei piani approvati che lo smistatore può eseguire, con effort e modello>
+
 ## Da confermare
 
 <azioni che richiedono conferma e non sono state eseguite: cosa, perché, comando per confermare>

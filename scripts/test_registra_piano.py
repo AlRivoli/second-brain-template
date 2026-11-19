@@ -647,7 +647,7 @@ class PercorsoPianoTest(Base):
 
     def test_piano_nella_cartella_riservata_di_un_altro_vault_rifiutato(self):
         # another checkout of a vault is a repo of sb: its projects/<reserved> notes are never a plan either
-        for nome in ("_" + "private", "_" + "PRIVATE", "lavoro", "segreto", "lavoro/cliente/docs"):
+        for nome in ("_" + "private", "_" + "PRIVATE", "lavoro", "segreto", "lavoro" "/cliente/docs"):
             with self.subTest(nome=nome):
                 d, _ = self.vault_con_repo()
                 altro = self.cartella()

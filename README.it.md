@@ -11,7 +11,7 @@ Un kit di partenza per un "second brain" personale: un vault Obsidian di Markdow
 - **Progetti**: un breve `STATE.md` per progetto, riscritto (mai appeso), un `decisions.md` datato e una riga in `projects/INDEX.md`.
 - **Regole che l'agente segue**: un `CLAUDE.md` corto, le decisioni in `docs/adr/` (note riservate, livello di autonomia), un glossario.
 - **Regole applicate da un hook**: `.claude/hooks/regole.py` con l'elenco `regole.json` (ADR-012) chiede conferma per push, PR, deploy e `rm` e rifiuta force-push e riscrittura della storia, in ogni repo dopo `scripts/installa-regole.py` (il setup lo propone). `.claude/settings.json` protegge la cartella riservata.
-- **Un ciclo di apprendimento** (ADR-013): un errore che qualcuno ha dovuto correggere lascia una riga datata in «Recurring errors» di `CLAUDE.md`; la seconda volta che torna la stessa causa diventa una regola, e una regola che si può verificare diventa un controllo. `/chiudi-giornata` propone la riga, `/weekly-review` propone la regola o il controllo, e niente si scrive senza un sì.
+- **Un ciclo di apprendimento** (ADR-015): un errore che qualcuno ha dovuto correggere lascia una riga datata in «Recurring errors» di `CLAUDE.md`; la seconda volta che torna la stessa causa diventa una regola, e una regola che si può verificare diventa un controllo. `/chiudi-giornata` propone la riga, `/weekly-review` propone la regola o il controllo, e niente si scrive senza un sì.
 - **Un controllo**: `scripts/verify` verifica le regole del vault. Nessun modello, solo file.
 - **Comandi e subagenti** in `.claude/`: vedi «Comandi». I testi dei comandi sono in italiano nella v0.1.
 - **Una dashboard locale** (libreria standard di Python, solo `127.0.0.1`): progetti, piano, oggi, radar, servizi e limiti, post e un pannello dell'assistente. Mostra solo le pagine dei moduli che hai scelto.
@@ -155,6 +155,7 @@ Avvia `claude` nella cartella del vault e scrivi:
 | `/bozze-settimana` | tre bozze di post per la settimana (LinkedIn e Instagram, come hai scelto) |
 | `/commit-push-pr` | commit, push e apertura di una PR per un repo di codice, chiedendoti conferma prima del push |
 | `/adotta-repo` | una tantum: elenca i repo git del computer che il vault non conosce e registra le tue risposte |
+| `/kit [nome]` | installa i plugin e le skill di `kit/<nome>.md` (predefinito `lavoro`) a livello utente, una voce alla volta, dopo `scan-before-install` (serve `uv tool install skillspector`) e il tuo sì; con il kit lavoro prima chiede se la regola dell'azienda lo permette |
 
 Subagenti: `researcher` (legge le novità e scrive schede in `radar/`), `reviewer` (rivede la settimana, non scrive), `writer` (bozze, solo con `/post`). Nessuno può lanciarne un altro.
 

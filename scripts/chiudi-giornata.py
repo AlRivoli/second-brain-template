@@ -64,7 +64,7 @@ def chiudi(vault=VAULT, log=LOGS / "second-brain-chiudi.log", lock=LOGS / "secon
             scrivi("niente da aggiornare: nessun commit nuovo nei repo e vault pulito")
             return 0
 
-        # I blocchi di oggi dell'hook delle regole (ADR-013), per la rilettura degli errori: nomi di regole e conteggi, mai
+        # I blocchi di oggi dell'hook delle regole (ADR-015), per la rilettura degli errori: nomi di regole e conteggi, mai
         # comandi. Qui il modello non ha Bash e non potrebbe contarli. Se il conteggio fallisce la chiusura va avanti senza:
         # la rilettura non deve fermare gli STATE.
         blocchi = ""

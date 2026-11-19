@@ -315,7 +315,7 @@ SEZIONI_ERRORI = ('recurring errors', 'errori ricorrenti')
 
 
 def check_errori_ricorrenti(root, problems):
-    """Nella sezione «Recurring errors» di CLAUDE.md ogni riga di elenco comincia con una data che esiste (ADR-013).
+    """Nella sezione «Recurring errors» di CLAUDE.md ogni riga di elenco comincia con una data che esiste (ADR-015).
 
     È il registro degli errori corretti: la rilettura settimanale conta quante volte torna la stessa causa, e una riga
     senza data non dice quando. Il testo della riga non si ripete nel messaggio. Senza CLAUDE.md non c'è nulla da controllare.

@@ -7,7 +7,7 @@ Uscite: nega = exit 2 con il motivo su stderr; chiedi = JSON "ask" su stdout; ni
 Non risponde mai "allow". Qualsiasi errore interno (JSON rotto, regole mancanti, apici non chiusi) diventa "chiedi".
 Limiti noti: alias di git, script su file (bash x.sh, python -c), tool MCP.
 
-Ogni nega e ogni chiedi lascia una riga nel registro dei blocchi (ADR-013): data, nome della regola, azione. Il nome viene
+Ogni nega e ogni chiedi lascia una riga nel registro dei blocchi (ADR-015): data, nome della regola, azione. Il nome viene
 da regole.json, mai dal comando: nel registro non entrano comandi, argomenti o percorsi. Se il registro non si può
 scrivere la decisione resta quella.
 """

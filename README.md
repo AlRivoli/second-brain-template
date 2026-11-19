@@ -11,7 +11,7 @@ A starter kit for a personal "second brain": an Obsidian vault of plain Markdown
 - **Projects**: one short `STATE.md` per project, rewritten (never appended), a dated `decisions.md`, and a row in `projects/INDEX.md`.
 - **Rules the agent follows**: a short `CLAUDE.md`, decisions in `docs/adr/` (confidential notes, autonomy level), a glossary.
 - **Rules enforced by a hook**: `.claude/hooks/regole.py` with its list `regole.json` (ADR-012) asks before push, PRs, deploys and `rm` and refuses force-push and history rewrites, in every repo once `scripts/installa-regole.py` has run (setup offers it). `.claude/settings.json` guards the confidential folder.
-- **A learning loop** (ADR-013): a mistake somebody had to correct leaves one dated line in "Recurring errors" of `CLAUDE.md`; the second time the same cause shows up it becomes a rule, and a rule that can be verified becomes a check. `/chiudi-giornata` proposes the line, `/weekly-review` proposes the rule or the check, and nothing is written without a yes.
+- **A learning loop** (ADR-015): a mistake somebody had to correct leaves one dated line in "Recurring errors" of `CLAUDE.md`; the second time the same cause shows up it becomes a rule, and a rule that can be verified becomes a check. `/chiudi-giornata` proposes the line, `/weekly-review` proposes the rule or the check, and nothing is written without a yes.
 - **A check**: `scripts/verify` verifies the vault rules. No model, files only.
 - **Commands and subagents** in `.claude/`: see "Commands". The command texts are in Italian in v0.1.
 - **A local dashboard** (Python standard library, `127.0.0.1` only): projects, plan, today, radar, services and limits, posts, and an assistant panel. It shows only the pages of the modules you chose.
@@ -155,6 +155,7 @@ Start `claude` in the vault folder and type:
 | `/bozze-settimana` | three post drafts for the week (LinkedIn and Instagram, as you chose) |
 | `/commit-push-pr` | commit, push and open a PR for a code repo, asking you before the push |
 | `/adotta-repo` | once: lists the git repos on your computer that the vault does not know and records your answers |
+| `/kit [name]` | installs the plugins and skills listed in `kit/<name>.md` (default `lavoro`) for your user, one at a time, after `scan-before-install` (needs `uv tool install skillspector`) and your yes; with the work kit it first asks whether your company's rule allows it |
 
 Subagents: `researcher` (reads the news and writes cards in `radar/`), `reviewer` (reviews the week, writes nothing), `writer` (drafts, only with `/post`). None of them can start another.
 

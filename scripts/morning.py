@@ -15,14 +15,28 @@ import avviso  # noqa: E402
 
 VAULT = Path(__file__).resolve().parent.parent
 CMD = ["claude", "--permission-mode", "dontAsk", "--allowedTools", "Bash(git log *)", "Bash(git status *)", "-p", "/morning"]
+SMISTATORE = Path.home() / "Developer" / "smistatore" / "bin" / "smistatore"
 
 
-def morning(vault=VAULT, run=subprocess.run, env=os.environ, oggi=None, obsidian=Path("/Applications/Obsidian.app"), segnala=avviso.segnala):
+def pronti_smistatore():
+    """Task pronti dei piani approvati, letti qui e passati nel prompt: nella run non presidiata Bash è negato e il PATH del
+    job non ha ~/.local/bin (errore ricorrente del 2026-10-27)."""
+    r = subprocess.run(["/usr/bin/python3", "-I", str(SMISTATORE), "pronti", "--markdown"], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def morning(vault=VAULT, run=subprocess.run, env=os.environ, oggi=None, obsidian=Path("/Applications/Obsidian.app"), segnala=avviso.segnala,
+            pronti=pronti_smistatore):
     if env.get("MORNING_DRY_RUN") == "1":
         print(shlex.join(CMD))
         return 0
     try:
-        r = run(CMD, cwd=vault, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+        testo = pronti()
+    except Exception:  # lo smistatore non deve mai fermare il brief
+        testo = ""
+    cmd = CMD[:-1] + [f"/morning Task pronti dallo smistatore:\n{testo}" if testo else "/morning"]
+    try:
+        r = run(cmd, cwd=vault, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
                 env={**env, "SB_NO_STOP_VERIFY": "1"})  # lo Stop hook non deve rimandare indietro una run non presidiata
     except FileNotFoundError:
         print("morning: claude non trovato nel PATH", file=sys.stderr)

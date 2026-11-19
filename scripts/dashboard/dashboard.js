@@ -176,7 +176,7 @@ function renderSistema(s) {
   $('sistema').replaceChildren(
     el('div', 'elenco-stat', [
       el('div', '', [el('span', '', ['Modelli Ollama caricati']), el('b', '', [modelli])]),
-      el('div', '', [el('span', '', ['Prossima inbox da n8n']), el('b', '', [s.prossimoRadar])]),
+      el('div', '', [el('span', '', ['Prossima raccolta dei feed']), el('b', '', [s.prossimoRadar])]),
     ]),
     el('details', '', [el('summary', '', ['Ultime righe del log di avvio']), log]),
   );

@@ -100,7 +100,7 @@ class ChiudiGiornata(unittest.TestCase):
         self.assertIn("commit: chiusura 2026-11-03", self.leggi_log())
 
     def test_i_blocchi_delle_regole_di_oggi_entrano_nel_prompt(self):
-        # ADR-013: la chiusura rilegge gli errori del giorno. Senza Bash il modello non può contarli: glieli passa lo script.
+        # ADR-015: la chiusura rilegge gli errori del giorno. Senza Bash il modello non può contarli: glieli passa lo script.
         self.attivita = "fse: 3 commit\n"
         self.blocchi = "force-push: 2 nega\npush: 1 chiedi\n"
         self.stati = [" M x", ""]

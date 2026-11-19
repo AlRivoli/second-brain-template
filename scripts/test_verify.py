@@ -163,7 +163,7 @@ class VerifyTest(unittest.TestCase):
     def test_repo_doppi_in_una_cartella_riservata_non_si_leggono(self):
         stato = GOOD_STATE.replace('- **Repo:** nessuno', '- **Repo:** C:\\a\\api\n- **Repo:** D:\\b\\api')
         with tempfile.TemporaryDirectory() as tmp:
-            make_vault(pathlib.Path(tmp), extra={'projects/' 'lavoro/STATE.md': stato})
+            make_vault(pathlib.Path(tmp), extra={'projects/' 'lavoro' '/STATE.md': stato})
             code, out = run_verify(tmp)
             self.assertEqual((code, out.strip()), (0, 'OK'))
 
@@ -543,7 +543,7 @@ class ScaffoldTest(unittest.TestCase):
 
 
 class ErroriRicorrentiTest(unittest.TestCase):
-    """La sezione «Recurring errors» di CLAUDE.md è il registro degli errori corretti (ADR-013): una riga senza data non si può rileggere."""
+    """La sezione «Recurring errors» di CLAUDE.md è il registro degli errori corretti (ADR-015): una riga senza data non si può rileggere."""
 
     def check(self, *righe, titolo='## Recurring errors'):
         testo = '# Vault\n\n## Writing rules\n\n- una regola senza data, in un\'altra sezione\n\n%s\n\nDated lines.\n\n%s\n' % (titolo, '\n'.join(righe))

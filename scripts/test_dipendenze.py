@@ -109,6 +109,13 @@ class LeggiProblemiTest(unittest.TestCase):
         n, doppi = d.nomi_repo(["C:\\src\\p\\api", "C:\\src\\p\\web", "nessuno", "", "D:\\altro\\api"])
         self.assertEqual((list(n), doppi), (["web"], ["api"]))
 
+    def test_nomi_repo_salta_il_segnaposto_del_template(self):
+        # the Repo line of templates/STATE.md, left as is in a new project without a repo
+        segnaposto = (RADICE / "templates" / "STATE.md").read_text(encoding="utf-8").split("- **Repo:** ", 1)[1].splitlines()[0]
+        self.assertTrue(segnaposto.startswith("<"))
+        self.assertEqual(d.nomi_repo([segnaposto]), ({}, []))
+        self.assertEqual(list(d.nomi_repo([segnaposto, "/srv/p/api"])[0]), ["api"])
+
     def test_nomi_repo_percorsi_posix_e_windows_su_ogni_sistema(self):
         n, doppi = d.nomi_repo(["/srv/p/api", "C:\\src\\p\\web\\", "/srv/x/cli/"])
         self.assertEqual((n, doppi), ({"api": "/srv/p/api", "web": "C:\\src\\p\\web\\", "cli": "/srv/x/cli/"}, []))

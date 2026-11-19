@@ -192,12 +192,12 @@ def nomi_repo(percorsi):
     """Short names of a project's `Repo` lines: ({name: path} in order, [names used by more than one path]).
 
     The short name is the last folder of the path, with a slash or a backslash separator, on every OS. `nessuno`, blank lines,
-    roots and paths ending in `.` or `..` are not repos, and the same path repeated counts once. A duplicate name is left out of the dict: it cannot be told apart, so it is
+    the `<...>` placeholder, roots and paths ending in `.` or `..` are not repos, and the same path repeated counts once. A duplicate name is left out of the dict: it cannot be told apart, so it is
     never allowed. O(n) time and space.
     """
     per_nome, doppi = {}, []
     for p in dict.fromkeys(p.strip() for p in percorsi):
-        if not p or p == "nessuno":
+        if not p or p == "nessuno" or p.startswith("<"):  # «<...>» is the placeholder of templates/STATE.md, like _repo_vero
             continue
         nome = re.split(r"[\\/]", p.rstrip("\\/"))[-1]  # not Path().name: that keeps a whole Windows path on POSIX
         # A root (`/`, `C:\`, `C:`) or a path ending in `.` or `..` names no folder of its own: it is never a candidate

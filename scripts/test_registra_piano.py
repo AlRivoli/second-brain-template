@@ -180,6 +180,32 @@ class RegistraTest(Base):
         self.assertIn("- [x] #sb Rilascio fase 1 · Task 1: Modello dei dati id:rel-t1", testo)
         self.assertEqual(testo.count("id:rel-t"), 3)
 
+    def test_rilancio_conserva_chi_te_e_i_dopo_scritti_a_mano(self):
+        d = self.vault()
+        rp.registra(PIANO_VALIDO, "sb", "rel", d, piano_rel="docs/rel.md")
+        piano = leggi(d, "piano.md").replace("id:rel-t1 ", "id:rel-t1 chi:te dopo:altro-1 ", 1)
+        (d / "docs" / "piano.md").write_bytes(piano.encode("utf-8"))
+        rp.registra(PIANO_VALIDO.replace("Modello dei dati", "Modello dei dati v2"), "sb", "rel", d, piano_rel="docs/rel.md")
+        riga = next(r for r in leggi(d, "piano.md").splitlines() if "id:rel-t1" in r)
+        self.assertIn("Modello dei dati v2", riga)
+        self.assertIn("chi:te", riga)
+        self.assertIn("dopo:altro-1", riga)
+
+    def test_piano_cambiato_durante_la_registrazione_non_si_sovrascrive(self):
+        # the dashboard runs in another process: a tick saved while this script works must not be lost
+        d = self.vault()
+        leggi_vero = rp._leggi
+        def leggi_e_cambia(percorso, nome):
+            testo = leggi_vero(percorso, nome)
+            if nome == rp.FILE[0] and not getattr(leggi_e_cambia, "fatto", False):
+                leggi_e_cambia.fatto = True
+                (d / "docs" / "piano.md").write_text(testo + "- [ ] #sb spuntato dalla dashboard\n", encoding="utf-8")
+            return testo
+        with mock.patch.object(rp, "_leggi", leggi_e_cambia), self.assertRaises(RuntimeError) as c:
+            rp.registra(PIANO_VALIDO, "sb", "rel", d)
+        self.assertIn("cambiato", str(c.exception))
+        self.assertIn("spuntato dalla dashboard", leggi(d, "piano.md"))
+
     def test_rilancio_senza_scadenza_conserva_i_marcatori_dell_obiettivo(self):
         d = self.vault(obiettivi=OBIETTIVI_BASE + "- rel: Titolo scelto a mano scadenza:2026-12-04 piano:docs/p.md\n")
         rp.registra(PIANO_VALIDO, "sb", "rel", d, giorni="tutti", piano_rel="docs/p.md")

@@ -428,6 +428,12 @@ def registra(testo_piano, tag, slug, vault, titolo=None, scadenza=None, giorni=N
             problemi.append(f"docs/piano.md:{v['riga']}: id:{id_} è di un task di un altro progetto: correggi o togli quella riga")
             continue
         i = v["riga"] - 1
+        # Markers added by hand survive: chi:te, and dopo: toward tasks of other plans (this plan's own links come from the plan)
+        sul_file = v["marcatori"]
+        a_mano = [r for r in sul_file.get("dopo", ()) if r not in legami[id_] and not re.fullmatch(re.escape(slug) + r"-t[1-9][0-9]*", r)]
+        if a_mano or "chi" in sul_file:
+            marcatori = {**marcatori, **({"dopo": legami[id_] + a_mano} if legami[id_] or a_mano else {}), **({"chi": sul_file["chi"]} if "chi" in sul_file else {})}
+            corpo = f"#{tag} {testo} " + " ".join(f"{k}:{','.join(v) if isinstance(v, list) else v}" for k, v in marcatori.items())
         voce = dipendenze.VOCE_PIANO.match(righe[i].rstrip("\r\n"))
         data = server.DATA_PIANO.match(voce.group(2))
         nuova = f"- [{voce.group(1)}] " + (data.group(1) + " — " if data else "") + corpo
@@ -482,6 +488,9 @@ def registra(testo_piano, tag, slug, vault, titolo=None, scadenza=None, giorni=N
     nuovi_obiettivi = "".join(righe_obiettivi)
 
     # Goal first: if the second write fails, a goal without tasks is harmless, tasks pointing to no goal are not
+    # ponytail: re-read just before writing, not a lock shared with the dashboard: the window left is a few milliseconds
+    if _leggi(file_piano, FILE[0]) != vecchio_piano or (esiste_obiettivi and _leggi(file_obiettivi, FILE[1]) != vecchi_obiettivi):
+        raise RuntimeError("docs/piano.md o docs/obiettivi.md è cambiato mentre registravo (la dashboard?): non scrivo nulla, rilancia")
     scritti, in_scrittura = [], FILE[1]
     try:
         if not esiste_obiettivi:

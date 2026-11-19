@@ -793,6 +793,9 @@ def progetti_indice(vault, riservate=None):
 
 
 NOME_PROGETTO = re.compile(r"[a-z0-9][a-z0-9-]{0,59}")
+# A name already in INDEX, maybe written by hand (MyApp, my_app): one folder name, no separator, no leading «_» or «.»
+# (_archivio, private folders), no trailing «.» (Windows drops it)
+NOME_INDICE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,58}[A-Za-z0-9_-])?")
 # nomi che Windows riserva ai dispositivi: una cartella «con» o «nul» non si crea
 NOMI_RISERVATI = {"lavoro", "con", "prn", "aux", "nul"} | {"%s%d" % (p, i) for p in ("com", "lpt") for i in range(10)}
 PRIORITA = ("alta", "media", "bassa")
@@ -1139,7 +1142,7 @@ def imposta_cartella(nome, cartella, vault=None, oggi=None):
         raise RuntimeError("config") from None
     if isinstance(nome, str) and nome.casefold() in percorsi.nomi_riservati(scelta):
         raise ValueError("lavoro")
-    if not (isinstance(nome, str) and NOME_PROGETTO.fullmatch(nome)) or nome in NOMI_RISERVATI:
+    if not (isinstance(nome, str) and NOME_INDICE.fullmatch(nome)) or nome.casefold() in NOMI_RISERVATI:
         raise ValueError("nome")
     basi = _basi_riservate(vault, scelta)
     # projects/ joins the reserved bases for this check only: by its text first, then resolved, as _repo_del_progetto does
@@ -1187,7 +1190,7 @@ def archivia_progetto(nome, vault=None, oggi=None):
         raise RuntimeError("config") from None
     if isinstance(nome, str) and nome.casefold() in percorsi.nomi_riservati(scelta):
         raise ValueError("lavoro")
-    if not (isinstance(nome, str) and NOME_PROGETTO.fullmatch(nome)) or nome in NOMI_RISERVATI:
+    if not (isinstance(nome, str) and NOME_INDICE.fullmatch(nome)) or nome.casefold() in NOMI_RISERVATI:
         raise ValueError("nome")
     oggi = oggi or datetime.now().strftime("%Y-%m-%d")
     progetti, indice = vault / "projects", vault / "projects" / "INDEX.md"
